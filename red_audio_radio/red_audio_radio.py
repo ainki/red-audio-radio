@@ -25,7 +25,8 @@ class RedAudioRadio(commands.Cog):
             enabled=False,
             ad_urls=[],
             jingle_urls=[],
-            cursor=0,
+            ad_cursor=0,
+            jingle_cursor=0,
             songs_until_break=0,
             break_counter=0,
             jingle_chance=25,
@@ -33,6 +34,34 @@ class RedAudioRadio(commands.Cog):
 
     def _audio_cog(self):
         return self.bot.get_cog("Audio")
+
+    async def _next_urls(self, guild: discord.Guild, key: str, count: int) -> list[str]:
+        urls = await self.config.guild(guild).get_attr(key)()
+        if not urls or count <= 0:
+            return []
+
+        cursor_key = "ad_cursor" if key == "ad_urls" else "jingle_cursor"
+        cursor = await self.config.guild(guild).get_attr(cursor_key)()
+        selected = []
+
+        for offset in range(count):
+            selected.append(urls[(cursor + offset) % len(urls)])
+
+        await self.config.guild(guild).get_attr(cursor_key).set((cursor + count) % len(urls))
+        return selected
+
+    def _build_break_track(self, player: lavalink.Player, guild: discord.Guild, track, is_jingle: bool):
+        track.extras.update(
+            {
+                "red_audio_radio_ad": True,
+                "red_audio_radio_jingle": is_jingle,
+                "enqueue_time": 0,
+                "vc": player.channel.id,
+                "requester": guild.me.id,
+            }
+        )
+        track.requester = guild.me
+        return track
 
     async def _resolve_track(self, guild: discord.Guild, track_url: str):
         audio_cog = self._audio_cog()
@@ -72,7 +101,7 @@ class RedAudioRadio(commands.Cog):
         ad_urls = settings["ad_urls"]
         jingle_urls = settings["jingle_urls"]
         await ctx.send(
-            "Ad breaks are {status}. Ads: {ads}. Jingles: {jingles}. Interval: {interval} song(s).".format(
+            "Ad breaks are {status}. Ads: {ads}. Jingles: {jingles}. Interval: {interval} song(s). Each break inserts 1-3 ads.".format(
                 status=status,
                 ads=len(ad_urls),
                 jingles=len(jingle_urls),
@@ -218,32 +247,31 @@ class RedAudioRadio(commands.Cog):
         use_jingle = bool(settings["jingle_urls"]) and (
             not settings["ad_urls"] or random.randint(1, 100) <= settings["jingle_chance"]
         )
-        pool_name = "jingle_urls" if use_jingle and settings["jingle_urls"] else "ad_urls"
-        pool = settings[pool_name]
-        if not pool and pool_name == "jingle_urls":
-            pool = settings["ad_urls"]
-        if not pool:
+
+        ad_count = min(len(settings["ad_urls"]), random.randint(1, 3))
+        ad_urls = await self._next_urls(guild, "ad_urls", ad_count)
+        if not ad_urls and not settings["jingle_urls"]:
             return
 
-        cursor = settings["cursor"] % len(pool)
-        track_url = pool[cursor]
-        await self.config.guild(guild).cursor.set((cursor + 1) % len(pool))
+        queued_tracks = []
 
-        break_track = await self._resolve_track(guild, track_url)
-        if break_track is None:
+        if use_jingle:
+            jingle_urls = await self._next_urls(guild, "jingle_urls", 1)
+            for jingle_url in jingle_urls:
+                jingle_track = await self._resolve_track(guild, jingle_url)
+                if jingle_track is not None:
+                    queued_tracks.append(self._build_break_track(player, guild, jingle_track, True))
+
+        for ad_url in ad_urls:
+            ad_track = await self._resolve_track(guild, ad_url)
+            if ad_track is not None:
+                queued_tracks.append(self._build_break_track(player, guild, ad_track, False))
+
+        if not queued_tracks:
             return
 
-        break_track.extras.update(
-            {
-                "red_audio_radio_ad": True,
-                "red_audio_radio_jingle": pool_name == "jingle_urls",
-                "enqueue_time": 0,
-                "vc": player.channel.id,
-                "requester": guild.me.id,
-            }
-        )
-        break_track.requester = guild.me
-        player.queue.insert(0, break_track)
+        for break_track in reversed(queued_tracks):
+            player.queue.insert(0, break_track)
 
         if not player.is_playing:
             await player.play()
