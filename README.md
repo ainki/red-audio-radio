@@ -12,6 +12,6 @@ Load it in Red with:
 Basic usage:
 
 1. `[p]adbreak add <youtube-or-stream-url>`
-2. `[p]adbreak toggle`
-3. `[p]adbreak list`
-4. `[p]mycom`
+2. `[p]adbreak interval 2 5`
+3. `[p]adbreak toggle`
+4. `[p]adbreak list`

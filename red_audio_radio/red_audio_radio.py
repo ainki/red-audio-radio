@@ -27,13 +27,21 @@ class RedAudioRadio(commands.Cog):
             jingle_urls=[],
             ad_cursor=0,
             jingle_cursor=0,
-            songs_until_break=0,
+            min_songs_until_break=0,
+            max_songs_until_break=0,
             break_counter=0,
             jingle_chance=25,
         )
 
     def _audio_cog(self):
         return self.bot.get_cog("Audio")
+
+    def _pick_break_interval(self, minimum: int, maximum: int) -> int:
+        if minimum <= 0 or maximum <= 0:
+            return 0
+        if minimum > maximum:
+            minimum, maximum = maximum, minimum
+        return random.randint(minimum, maximum)
 
     async def _next_urls(self, guild: discord.Guild, key: str, count: int) -> list[str]:
         urls = await self.config.guild(guild).get_attr(key)()
@@ -101,11 +109,12 @@ class RedAudioRadio(commands.Cog):
         ad_urls = settings["ad_urls"]
         jingle_urls = settings["jingle_urls"]
         await ctx.send(
-            "Ad breaks are {status}. Ads: {ads}. Jingles: {jingles}. Interval: {interval} song(s). Each break inserts 1-3 ads.".format(
+            "Ad breaks are {status}. Ads: {ads}. Jingles: {jingles}. Interval: {minimum}-{maximum} song(s). Each break inserts 1-3 ads.".format(
                 status=status,
                 ads=len(ad_urls),
                 jingles=len(jingle_urls),
-                interval=settings["songs_until_break"],
+                minimum=settings["min_songs_until_break"],
+                maximum=settings["max_songs_until_break"],
             )
         )
 
@@ -121,13 +130,20 @@ class RedAudioRadio(commands.Cog):
     @adbreak.command(name="interval")
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
-    async def adbreak_interval(self, ctx: commands.Context, songs: int):
-        """Set how many songs play before a break occurs. Set 0 to disable."""
-        if songs < 0:
-            return await ctx.send("Interval must be 0 or greater.")
-        await self.config.guild(ctx.guild).songs_until_break.set(songs)
-        await self.config.guild(ctx.guild).break_counter.set(songs)
-        await ctx.send(f"Break interval set to {songs} song(s).")
+    async def adbreak_interval(self, ctx: commands.Context, minimum: int, maximum: Optional[int] = None):
+        """Set a random song interval range for breaks. Use one value for a fixed interval."""
+        if maximum is None:
+            maximum = minimum
+        if minimum < 0 or maximum < 0:
+            return await ctx.send("Interval values must be 0 or greater.")
+        if minimum > maximum:
+            minimum, maximum = maximum, minimum
+
+        next_break = self._pick_break_interval(minimum, maximum)
+        await self.config.guild(ctx.guild).min_songs_until_break.set(minimum)
+        await self.config.guild(ctx.guild).max_songs_until_break.set(maximum)
+        await self.config.guild(ctx.guild).break_counter.set(next_break)
+        await ctx.send(f"Break interval set to {minimum}-{maximum} song(s). Next break in {next_break} song(s).")
 
     @adbreak.command(name="jinglechance")
     @commands.guild_only()
@@ -208,10 +224,13 @@ class RedAudioRadio(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def adbreak_resetcounter(self, ctx: commands.Context):
-        """Reset the break countdown to the configured interval."""
-        songs_until_break = await self.config.guild(ctx.guild).songs_until_break()
-        await self.config.guild(ctx.guild).break_counter.set(songs_until_break)
-        await ctx.send("Break counter reset.")
+        """Reset the break countdown using the configured interval range."""
+        settings = await self.config.guild(ctx.guild).all()
+        next_break = self._pick_break_interval(
+            settings["min_songs_until_break"], settings["max_songs_until_break"]
+        )
+        await self.config.guild(ctx.guild).break_counter.set(next_break)
+        await ctx.send(f"Break counter reset. Next break in {next_break} song(s).")
 
     @commands.Cog.listener()
     async def on_red_audio_track_end(
@@ -235,10 +254,11 @@ class RedAudioRadio(commands.Cog):
         if not player.queue:
             return
 
-        songs_until_break = settings["songs_until_break"]
+        min_songs_until_break = settings["min_songs_until_break"]
+        max_songs_until_break = settings["max_songs_until_break"]
         break_counter = settings["break_counter"]
 
-        if songs_until_break <= 0:
+        if min_songs_until_break <= 0 or max_songs_until_break <= 0:
             return
 
         break_counter -= 1
@@ -246,7 +266,8 @@ class RedAudioRadio(commands.Cog):
             await self.config.guild(guild).break_counter.set(break_counter)
             return
 
-        await self.config.guild(guild).break_counter.set(songs_until_break)
+        next_break = self._pick_break_interval(min_songs_until_break, max_songs_until_break)
+        await self.config.guild(guild).break_counter.set(next_break)
 
         use_jingle = bool(settings["jingle_urls"]) and (
             not settings["ad_urls"] or random.randint(1, 100) <= settings["jingle_chance"]
