@@ -220,7 +220,11 @@ class RedAudioRadio(commands.Cog):
         if not guild or not track:
             return
 
-        if track.extras.get("red_audio_radio_ad"):
+        extras = getattr(track, "extras", {}) or {}
+        if extras.get("red_audio_radio_ad") or extras.get("red_audio_radio_jingle"):
+            return
+
+        if getattr(requester, "id", None) == getattr(guild.me, "id", None):
             return
 
         settings = await self.config.guild(guild).all()
