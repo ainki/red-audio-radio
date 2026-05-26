@@ -1,0 +1,8 @@
+{
+  "author": ["aainki"],
+  "description": "Injects configurable ad tracks between Red Audio songs.",
+  "install_msg": "Load with [p]addpath <this-repo-folder> then [p]load red_audio_radio.",
+  "short": "Audio ad breaks",
+  "tags": ["audio", "ads", "music"],
+  "end_user_data_statement": "This cog stores configured ad URLs per guild."
+}
