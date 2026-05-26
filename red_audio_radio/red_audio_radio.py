@@ -58,6 +58,14 @@ class RedAudioRadio(commands.Cog):
         await self.config.guild(guild).get_attr(cursor_key).set((cursor + count) % len(urls))
         return selected
 
+    def _poster_key(self, track) -> str:
+        author = (getattr(track, "author", None) or "").strip().casefold()
+        if author:
+            return author
+
+        uri = (getattr(track, "uri", None) or "").strip().casefold()
+        return uri
+
     def _build_break_track(self, player: lavalink.Player, guild: discord.Guild, track, is_jingle: bool):
         track.extras.update(
             {
@@ -279,17 +287,26 @@ class RedAudioRadio(commands.Cog):
             return
 
         queued_tracks = []
+        seen_posters = set()
 
         if use_jingle:
             jingle_urls = await self._next_urls(guild, "jingle_urls", 1)
             for jingle_url in jingle_urls:
                 jingle_track = await self._resolve_track(guild, jingle_url)
                 if jingle_track is not None:
+                    poster_key = self._poster_key(jingle_track)
+                    if poster_key:
+                        seen_posters.add(poster_key)
                     queued_tracks.append(self._build_break_track(player, guild, jingle_track, True))
 
         for ad_url in ad_urls:
             ad_track = await self._resolve_track(guild, ad_url)
             if ad_track is not None:
+                poster_key = self._poster_key(ad_track)
+                if poster_key and poster_key in seen_posters:
+                    continue
+                if poster_key:
+                    seen_posters.add(poster_key)
                 queued_tracks.append(self._build_break_track(player, guild, ad_track, False))
 
         if not queued_tracks:
