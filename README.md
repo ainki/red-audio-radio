@@ -1,6 +1,6 @@
 # red-audio-radio
 
-Red V3 cog for inserting configurable ad tracks between songs.
+Red V3 cog for inserting configurable ads and jingles around Red Audio playback.
 
 Package path: `red_audio_radio/`
 
@@ -15,9 +15,18 @@ Basic usage:
 2. `[p]adbreak addjingle <youtube-or-stream-url>`
 3. `[p]adbreak interval 2 5`
 4. `[p]adbreak jinglechance 25`
-5. `[p]adbreak toggle`
-6. `[p]adbreak list`
-7. `[p]adbreak list jingles`
+5. `[p]adbreak breakjingles true`
+6. `[p]adbreak toggle`
+7. `[p]adbreak list`
+8. `[p]adbreak list jingles`
+
+Behavior notes:
+
+1. `adbreak interval 2 5` means ad breaks trigger after a random 2 to 5 normal songs.
+2. `adbreak jinglechance 25` means there is a 25% chance to play a random standalone jingle between normal songs.
+3. `adbreak breakjingles true` makes ad breaks play a random jingle at the start and end of the break.
+4. `adbreak list` shows the ad pool only.
+5. `adbreak list jingles` shows the jingle pool only.
 
 Library maintenance commands:
 

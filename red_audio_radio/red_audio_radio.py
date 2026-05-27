@@ -94,6 +94,7 @@ class RedAudioRadio(commands.Cog):
             max_songs_until_break=0,
             break_counter=0,
             jingle_chance=25,
+            break_jingles_enabled=True,
         )
 
     def _audio_cog(self):
@@ -320,19 +321,28 @@ class RedAudioRadio(commands.Cog):
 
     async def _preview_break(self, guild: discord.Guild) -> dict:
         settings = await self.config.guild(guild).all()
-        use_jingle = bool(settings["jingle_urls"]) and (
-            not settings["ad_urls"] or random.randint(1, 100) <= settings["jingle_chance"]
-        )
         ad_count = min(len(settings["ad_urls"]), random.randint(1, 3))
         seen_posters = set()
         tracks = []
+        break_jingles_enabled = (
+            settings["break_jingles_enabled"] and bool(settings["jingle_urls"]) and ad_count > 0
+        )
 
-        if use_jingle:
+        if break_jingles_enabled:
             jingle_tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, seen_posters)
             tracks.extend(jingle_tracks)
 
         ad_tracks, _ = await self._preview_pool_tracks(guild, "ad_urls", ad_count, seen_posters)
         tracks.extend(ad_tracks)
+
+        if break_jingles_enabled:
+            closing_jingle_tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, seen_posters)
+            tracks.extend(closing_jingle_tracks)
+
+        standalone_jingle = bool(settings["jingle_urls"]) and random.randint(1, 100) <= settings["jingle_chance"]
+        standalone_tracks = []
+        if standalone_jingle:
+            standalone_tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, set())
 
         next_break = self._pick_break_interval(
             settings["min_songs_until_break"], settings["max_songs_until_break"]
@@ -342,8 +352,32 @@ class RedAudioRadio(commands.Cog):
             "tracks": tracks,
             "next_break": next_break,
             "ad_count_target": ad_count,
-            "use_jingle": use_jingle,
+            "standalone_jingle": standalone_jingle,
+            "standalone_tracks": standalone_tracks,
+            "break_jingles_enabled": break_jingles_enabled,
         }
+
+    async def _enqueue_injected_tracks(
+        self, guild: discord.Guild, player: lavalink.Player, tracks: list
+    ) -> None:
+        if not tracks:
+            return
+
+        self._pending_break_tracks[guild.id] = self._pending_break_tracks.get(guild.id, 0) + len(tracks)
+        for break_track in reversed(tracks):
+            player.queue.insert(0, break_track)
+
+        if not player.is_playing:
+            await player.play()
+
+    async def _maybe_collect_standalone_jingle(
+        self, guild: discord.Guild, settings: dict, player: lavalink.Player
+    ) -> list:
+        if not settings["jingle_urls"]:
+            return []
+        if random.randint(1, 100) > settings["jingle_chance"]:
+            return []
+        return await self._collect_pool_tracks(guild, "jingle_urls", 1, set(), player, True)
 
     async def _next_urls(self, guild: discord.Guild, key: str, count: int) -> list[str]:
         urls = await self.config.guild(guild).get_attr(key)()
@@ -423,7 +457,7 @@ class RedAudioRadio(commands.Cog):
             title="Adbreak Overview",
             description=(
                 "Ad breaks are **{status}**. Interval: **{minimum}-{maximum}** song(s). "
-                "Each break inserts **1-3** ads."
+                "Each break inserts **1-3** ads and can wrap them with jingles."
             ).format(
                 status=status,
                 minimum=settings["min_songs_until_break"],
@@ -433,6 +467,12 @@ class RedAudioRadio(commands.Cog):
         embed.add_field(name="Ads", value=str(len(ad_urls)), inline=True)
         embed.add_field(name="Jingles", value=str(len(jingle_urls)), inline=True)
         embed.add_field(name="Next Break", value=f"{settings['break_counter']} song(s)", inline=True)
+        embed.add_field(name="Jingle Between Songs", value=f"{settings['jingle_chance']}%", inline=True)
+        embed.add_field(
+            name="Break Start/End Jingles",
+            value="Yes" if settings["break_jingles_enabled"] else "No",
+            inline=True,
+        )
         await ctx.send(embed=embed)
 
     @adbreak.command(name="status")
@@ -455,7 +495,12 @@ class RedAudioRadio(commands.Cog):
         embed.add_field(name="Next Break", value=f"{settings['break_counter']} song(s)", inline=True)
         embed.add_field(name="Ads Stored", value=str(len(settings["ad_urls"])), inline=True)
         embed.add_field(name="Jingles Stored", value=str(len(settings["jingle_urls"])), inline=True)
-        embed.add_field(name="Jingle Chance", value=f"{settings['jingle_chance']}%", inline=True)
+        embed.add_field(name="Jingle Between Songs", value=f"{settings['jingle_chance']}%", inline=True)
+        embed.add_field(
+            name="Break Start/End Jingles",
+            value="Yes" if settings["break_jingles_enabled"] else "No",
+            inline=True,
+        )
         embed.add_field(name="Selection Mode", value="Randomized per break", inline=True)
         if player is not None:
             now_playing = getattr(player, "current", None)
@@ -483,7 +528,16 @@ class RedAudioRadio(commands.Cog):
         )
         embed.add_field(name="Next Countdown", value=f"{preview['next_break']} song(s)", inline=True)
         embed.add_field(name="Target Ads", value=str(preview["ad_count_target"]), inline=True)
-        embed.add_field(name="Jingle Selected", value="Yes" if preview["use_jingle"] else "No", inline=True)
+        embed.add_field(
+            name="Standalone Jingle Roll",
+            value="Yes" if preview["standalone_jingle"] else "No",
+            inline=True,
+        )
+        embed.add_field(
+            name="Break Start/End Jingles",
+            value="Yes" if preview["break_jingles_enabled"] else "No",
+            inline=True,
+        )
         if preview["tracks"]:
             preview_lines = []
             for index, track in enumerate(preview["tracks"], start=1):
@@ -493,6 +547,13 @@ class RedAudioRadio(commands.Cog):
             embed.add_field(name="Preview Tracks", value="\n".join(preview_lines[:10]), inline=False)
         else:
             embed.add_field(name="Preview Tracks", value="No playable tracks would be selected right now.", inline=False)
+
+        if preview["standalone_tracks"]:
+            standalone_lines = []
+            for index, track in enumerate(preview["standalone_tracks"], start=1):
+                title = self._format_link_title(track["title"], track["uri"])
+                standalone_lines.append(f"`{index}.` {title} - {track['author']}")
+            embed.add_field(name="Between-Song Jingle", value="\n".join(standalone_lines), inline=False)
         await ctx.send(embed=embed)
 
     @adbreak.command(name="toggle")
@@ -526,11 +587,22 @@ class RedAudioRadio(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def adbreak_jinglechance(self, ctx: commands.Context, chance: int):
-        """Set the percent chance a break uses a jingle instead of an ad."""
+        """Set the percent chance a random jingle plays between normal songs."""
         if chance < 0 or chance > 100:
             return await ctx.send("Chance must be between 0 and 100.")
         await self.config.guild(ctx.guild).jingle_chance.set(chance)
-        await ctx.send(f"Jingle chance set to {chance}%.")
+        await ctx.send(f"Between-song jingle chance set to {chance}%.")
+
+    @adbreak.command(name="breakjingles")
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_guild=True)
+    async def adbreak_breakjingles(self, ctx: commands.Context, enabled: Optional[bool] = None):
+        """Toggle start/end jingles for ad breaks."""
+        current = await self.config.guild(ctx.guild).break_jingles_enabled()
+        if enabled is None:
+            enabled = not current
+        await self.config.guild(ctx.guild).break_jingles_enabled.set(enabled)
+        await ctx.send(f"Break start/end jingles are now {'enabled' if enabled else 'disabled'}.")
 
     @adbreak.command(name="add")
     @commands.guild_only()
@@ -685,30 +757,32 @@ class RedAudioRadio(commands.Cog):
         min_songs_until_break = settings["min_songs_until_break"]
         max_songs_until_break = settings["max_songs_until_break"]
         break_counter = settings["break_counter"]
+        break_triggered = False
 
-        if min_songs_until_break <= 0 or max_songs_until_break <= 0:
+        if min_songs_until_break > 0 and max_songs_until_break > 0:
+            break_counter -= 1
+            if break_counter > 0:
+                await self.config.guild(guild).break_counter.set(break_counter)
+            else:
+                break_triggered = True
+                next_break = self._pick_break_interval(min_songs_until_break, max_songs_until_break)
+                await self.config.guild(guild).break_counter.set(next_break)
+
+        if not break_triggered:
+            standalone_tracks = await self._maybe_collect_standalone_jingle(guild, settings, player)
+            await self._enqueue_injected_tracks(guild, player, standalone_tracks)
             return
-
-        break_counter -= 1
-        if break_counter > 0:
-            await self.config.guild(guild).break_counter.set(break_counter)
-            return
-
-        next_break = self._pick_break_interval(min_songs_until_break, max_songs_until_break)
-        await self.config.guild(guild).break_counter.set(next_break)
-
-        use_jingle = bool(settings["jingle_urls"]) and (
-            not settings["ad_urls"] or random.randint(1, 100) <= settings["jingle_chance"]
-        )
 
         ad_count = min(len(settings["ad_urls"]), random.randint(1, 3))
-        if ad_count <= 0 and not settings["jingle_urls"]:
+        if ad_count <= 0:
             return
+
+        break_jingles_enabled = settings["break_jingles_enabled"] and bool(settings["jingle_urls"])
 
         queued_tracks = []
         seen_posters = set()
 
-        if use_jingle:
+        if break_jingles_enabled:
             queued_tracks.extend(
                 await self._collect_pool_tracks(
                     guild, "jingle_urls", 1, seen_posters, player, True
@@ -721,18 +795,17 @@ class RedAudioRadio(commands.Cog):
             )
         )
 
+        if break_jingles_enabled:
+            queued_tracks.extend(
+                await self._collect_pool_tracks(
+                    guild, "jingle_urls", 1, seen_posters, player, True
+                )
+            )
+
         if not queued_tracks:
             return
 
-        self._pending_break_tracks[guild.id] = self._pending_break_tracks.get(guild.id, 0) + len(
-            queued_tracks
-        )
-
-        for break_track in reversed(queued_tracks):
-            player.queue.insert(0, break_track)
-
-        if not player.is_playing:
-            await player.play()
+        await self._enqueue_injected_tracks(guild, player, queued_tracks)
 
     @commands.command()
     async def mycom(self, ctx):
