@@ -113,6 +113,18 @@ class RedAudioRadio(commands.Cog):
             return entry.get("author") or "Unknown"
         return "Unknown"
 
+    def _truncate_title(self, title: str, limit: int = 60) -> str:
+        title = (title or "Unknown").strip()
+        if len(title) <= limit:
+            return title
+        return f"{title[: limit - 3].rstrip()}..."
+
+    def _format_link_title(self, title: str, url: str, limit: int = 60) -> str:
+        safe_title = self._truncate_title(title, limit).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        if url.startswith(("http://", "https://")):
+            return f"[{safe_title}]({url})"
+        return safe_title
+
     def _build_pool_entry(self, track_url: str, track=None) -> dict:
         return {
             "url": getattr(track, "uri", None) or track_url,
@@ -158,7 +170,7 @@ class RedAudioRadio(commands.Cog):
 
         lines = []
         for index, entry in enumerate(page_entries, start=start_index + 1):
-            title = self._entry_title(entry)
+            title = self._format_link_title(self._entry_title(entry), self._entry_url(entry))
             author = self._entry_author(entry)
             if author != "Unknown":
                 lines.append(f"`{index}.` {title} - {author}")
@@ -445,7 +457,8 @@ class RedAudioRadio(commands.Cog):
             preview_lines = []
             for index, track in enumerate(preview["tracks"], start=1):
                 kind = "Jingle" if track["is_jingle"] else "Ad"
-                preview_lines.append(f"`{index}.` [{kind}] {track['title']} - {track['author']}")
+                title = self._format_link_title(track["title"], track["uri"])
+                preview_lines.append(f"`{index}.` [{kind}] {title} - {track['author']}")
             embed.add_field(name="Preview Tracks", value="\n".join(preview_lines[:10]), inline=False)
         else:
             embed.add_field(name="Preview Tracks", value="No playable tracks would be selected right now.", inline=False)
