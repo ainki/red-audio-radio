@@ -15,3 +15,8 @@ Basic usage:
 2. `[p]adbreak interval 2 5`
 3. `[p]adbreak toggle`
 4. `[p]adbreak list`
+
+Helpful inspection commands:
+
+1. `[p]adbreak status`
+2. `[p]adbreak preview`

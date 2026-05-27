@@ -43,6 +43,15 @@ class RedAudioRadio(commands.Cog):
             minimum, maximum = maximum, minimum
         return random.randint(minimum, maximum)
 
+    def _cursor_key_for_pool(self, key: str) -> str:
+        return "ad_cursor" if key == "ad_urls" else "jingle_cursor"
+
+    async def _pool_urls(self, guild: discord.Guild, key: str) -> list[str]:
+        return await self.config.guild(guild).get_attr(key)()
+
+    async def _pool_cursor(self, guild: discord.Guild, key: str) -> int:
+        return await self.config.guild(guild).get_attr(self._cursor_key_for_pool(key))()
+
     async def _collect_pool_tracks(
         self,
         guild: discord.Guild,
@@ -78,6 +87,72 @@ class RedAudioRadio(commands.Cog):
 
         await self.config.guild(guild).get_attr(cursor_key).set((cursor + scanned_count) % len(urls))
         return queued_tracks
+
+    async def _preview_pool_tracks(
+        self,
+        guild: discord.Guild,
+        key: str,
+        desired_count: int,
+        seen_posters: set[str],
+    ) -> tuple[list[dict], int]:
+        urls = await self._pool_urls(guild, key)
+        if not urls or desired_count <= 0:
+            return [], 0
+
+        cursor = await self._pool_cursor(guild, key)
+        preview_tracks = []
+        scanned_count = 0
+
+        while scanned_count < len(urls) and len(preview_tracks) < desired_count:
+            track_url = urls[(cursor + scanned_count) % len(urls)]
+            scanned_count += 1
+            track = await self._resolve_track(guild, track_url)
+            if track is None:
+                continue
+
+            poster_key = self._poster_key(track)
+            if poster_key and poster_key in seen_posters:
+                continue
+            if poster_key:
+                seen_posters.add(poster_key)
+
+            preview_tracks.append(
+                {
+                    "title": getattr(track, "title", None) or track_url,
+                    "author": getattr(track, "author", None) or "Unknown",
+                    "uri": getattr(track, "uri", None) or track_url,
+                    "is_jingle": key == "jingle_urls",
+                }
+            )
+
+        return preview_tracks, scanned_count
+
+    async def _preview_break(self, guild: discord.Guild) -> dict:
+        settings = await self.config.guild(guild).all()
+        use_jingle = bool(settings["jingle_urls"]) and (
+            not settings["ad_urls"] or random.randint(1, 100) <= settings["jingle_chance"]
+        )
+        ad_count = min(len(settings["ad_urls"]), random.randint(1, 3))
+        seen_posters = set()
+        tracks = []
+
+        if use_jingle:
+            jingle_tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, seen_posters)
+            tracks.extend(jingle_tracks)
+
+        ad_tracks, _ = await self._preview_pool_tracks(guild, "ad_urls", ad_count, seen_posters)
+        tracks.extend(ad_tracks)
+
+        next_break = self._pick_break_interval(
+            settings["min_songs_until_break"], settings["max_songs_until_break"]
+        )
+        return {
+            "settings": settings,
+            "tracks": tracks,
+            "next_break": next_break,
+            "ad_count_target": ad_count,
+            "use_jingle": use_jingle,
+        }
 
     async def _next_urls(self, guild: discord.Guild, key: str, count: int) -> list[str]:
         urls = await self.config.guild(guild).get_attr(key)()
@@ -161,6 +236,61 @@ class RedAudioRadio(commands.Cog):
                 maximum=settings["max_songs_until_break"],
             )
         )
+
+    @adbreak.command(name="status")
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_guild=True)
+    async def adbreak_status(self, ctx: commands.Context):
+        """Show current adbreak settings and runtime status."""
+        settings = await self.config.guild(ctx.guild).all()
+        try:
+            player = lavalink.get_player(ctx.guild.id)
+        except Exception:
+            player = None
+
+        lines = [
+            f"Enabled: {'yes' if settings['enabled'] else 'no'}",
+            f"Ads stored: {len(settings['ad_urls'])}",
+            f"Jingles stored: {len(settings['jingle_urls'])}",
+            f"Interval range: {settings['min_songs_until_break']}-{settings['max_songs_until_break']} song(s)",
+            f"Songs until next break: {settings['break_counter']}",
+            f"Jingle chance: {settings['jingle_chance']}%",
+            f"Ad cursor: {settings['ad_cursor']}",
+            f"Jingle cursor: {settings['jingle_cursor']}",
+        ]
+
+        if player is not None:
+            lines.append(f"Currently playing: {'yes' if getattr(player, 'current', None) else 'no'}")
+            lines.append(f"Queued tracks: {len(getattr(player, 'queue', []))}")
+
+        await ctx.send("\n".join(lines))
+
+    @adbreak.command(name="preview")
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_guild=True)
+    async def adbreak_preview(self, ctx: commands.Context):
+        """Preview the next adbreak selection without changing cursors or queue."""
+        preview = await self._preview_break(ctx.guild)
+        settings = preview["settings"]
+
+        lines = [
+            f"Current countdown: {settings['break_counter']} song(s)",
+            f"Configured interval: {settings['min_songs_until_break']}-{settings['max_songs_until_break']} song(s)",
+            f"Next countdown after this break would be: {preview['next_break']} song(s)",
+            f"Target ads for this break: {preview['ad_count_target']}",
+            f"Jingle selected: {'yes' if preview['use_jingle'] else 'no'}",
+            "",
+            "Preview tracks:",
+        ]
+
+        if preview["tracks"]:
+            for index, track in enumerate(preview["tracks"], start=1):
+                kind = "Jingle" if track["is_jingle"] else "Ad"
+                lines.append(f"{index}. [{kind}] {track['title']} | {track['author']}")
+        else:
+            lines.append("No playable tracks would be selected right now.")
+
+        await ctx.send("\n".join(lines))
 
     @adbreak.command(name="toggle")
     @commands.guild_only()
