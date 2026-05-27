@@ -43,6 +43,42 @@ class RedAudioRadio(commands.Cog):
             minimum, maximum = maximum, minimum
         return random.randint(minimum, maximum)
 
+    async def _collect_pool_tracks(
+        self,
+        guild: discord.Guild,
+        key: str,
+        desired_count: int,
+        seen_posters: set[str],
+        player: lavalink.Player,
+        is_jingle: bool,
+    ) -> list:
+        urls = await self.config.guild(guild).get_attr(key)()
+        if not urls or desired_count <= 0:
+            return []
+
+        cursor_key = "ad_cursor" if key == "ad_urls" else "jingle_cursor"
+        cursor = await self.config.guild(guild).get_attr(cursor_key)()
+        queued_tracks = []
+        scanned_count = 0
+
+        while scanned_count < len(urls) and len(queued_tracks) < desired_count:
+            track_url = urls[(cursor + scanned_count) % len(urls)]
+            scanned_count += 1
+            track = await self._resolve_track(guild, track_url)
+            if track is None:
+                continue
+
+            poster_key = self._poster_key(track)
+            if poster_key and poster_key in seen_posters:
+                continue
+            if poster_key:
+                seen_posters.add(poster_key)
+
+            queued_tracks.append(self._build_break_track(player, guild, track, is_jingle))
+
+        await self.config.guild(guild).get_attr(cursor_key).set((cursor + scanned_count) % len(urls))
+        return queued_tracks
+
     async def _next_urls(self, guild: discord.Guild, key: str, count: int) -> list[str]:
         urls = await self.config.guild(guild).get_attr(key)()
         if not urls or count <= 0:
@@ -282,32 +318,24 @@ class RedAudioRadio(commands.Cog):
         )
 
         ad_count = min(len(settings["ad_urls"]), random.randint(1, 3))
-        ad_urls = await self._next_urls(guild, "ad_urls", ad_count)
-        if not ad_urls and not settings["jingle_urls"]:
+        if ad_count <= 0 and not settings["jingle_urls"]:
             return
 
         queued_tracks = []
         seen_posters = set()
 
         if use_jingle:
-            jingle_urls = await self._next_urls(guild, "jingle_urls", 1)
-            for jingle_url in jingle_urls:
-                jingle_track = await self._resolve_track(guild, jingle_url)
-                if jingle_track is not None:
-                    poster_key = self._poster_key(jingle_track)
-                    if poster_key:
-                        seen_posters.add(poster_key)
-                    queued_tracks.append(self._build_break_track(player, guild, jingle_track, True))
+            queued_tracks.extend(
+                await self._collect_pool_tracks(
+                    guild, "jingle_urls", 1, seen_posters, player, True
+                )
+            )
 
-        for ad_url in ad_urls:
-            ad_track = await self._resolve_track(guild, ad_url)
-            if ad_track is not None:
-                poster_key = self._poster_key(ad_track)
-                if poster_key and poster_key in seen_posters:
-                    continue
-                if poster_key:
-                    seen_posters.add(poster_key)
-                queued_tracks.append(self._build_break_track(player, guild, ad_track, False))
+        queued_tracks.extend(
+            await self._collect_pool_tracks(
+                guild, "ad_urls", ad_count, seen_posters, player, False
+            )
+        )
 
         if not queued_tracks:
             return
