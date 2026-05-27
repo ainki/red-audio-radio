@@ -72,6 +72,7 @@ class RedAudioRadio(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self._pending_break_tracks: dict[int, int] = {}
         self.config = Config.get_conf(self, identifier=2310625601, force_registration=True)
         self.config.register_guild(
             enabled=False,
@@ -617,6 +618,15 @@ class RedAudioRadio(commands.Cog):
         if not guild or not track:
             return
 
+        pending_break_tracks = self._pending_break_tracks.get(guild.id, 0)
+        if pending_break_tracks > 0:
+            remaining_tracks = pending_break_tracks - 1
+            if remaining_tracks > 0:
+                self._pending_break_tracks[guild.id] = remaining_tracks
+            else:
+                self._pending_break_tracks.pop(guild.id, None)
+            return
+
         extras = getattr(track, "extras", {}) or {}
         if extras.get("red_audio_radio_ad") or extras.get("red_audio_radio_jingle"):
             return
@@ -673,6 +683,10 @@ class RedAudioRadio(commands.Cog):
 
         if not queued_tracks:
             return
+
+        self._pending_break_tracks[guild.id] = self._pending_break_tracks.get(guild.id, 0) + len(
+            queued_tracks
+        )
 
         for break_track in reversed(queued_tracks):
             player.queue.insert(0, break_track)
