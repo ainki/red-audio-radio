@@ -131,6 +131,42 @@ class RedAudioRadio(commands.Cog):
         random.shuffle(shuffled_entries)
         return shuffled_entries
 
+    def _format_pool_line(self, index: int, entry) -> str:
+        title = self._format_link_title(self._entry_title(entry), self._entry_url(entry))
+        author = self._entry_author(entry)
+        if author != "Unknown":
+            return f"`{index}.` {title} - {author}"
+        return f"`{index}.` {title}"
+
+    def _paginate_pool_entries(self, entries: list, label: str, max_chars: int = 900) -> list[str]:
+        if not entries:
+            return [f"No {label.lower()} configured."]
+
+        pages = []
+        current_lines = []
+        current_length = 0
+
+        for index, entry in enumerate(entries, start=1):
+            line = self._format_pool_line(index, entry)
+            line_length = len(line) + (1 if current_lines else 0)
+
+            if current_lines and current_length + line_length > max_chars:
+                pages.append("\n".join(current_lines))
+                current_lines = [line]
+                current_length = len(line)
+                continue
+
+            current_lines.append(line)
+            current_length += line_length
+
+        if current_lines:
+            pages.append("\n".join(current_lines))
+
+        return pages
+
+    def _pool_page_count(self, entries: list, label: str) -> int:
+        return len(self._paginate_pool_entries(entries, label))
+
     def _build_pool_entry(self, track_url: str, track=None) -> dict:
         return {
             "url": getattr(track, "uri", None) or track_url,
@@ -165,25 +201,11 @@ class RedAudioRadio(commands.Cog):
         await self.config.guild(guild).get_attr(key).set(refreshed_entries)
         return len(entries), updated_count, failed_count
 
-    def _format_pool_page(self, entries: list, label: str, page: int, per_page: int = 10) -> tuple[str, int]:
-        if not entries:
-            return f"No {label.lower()} configured.", 1
-
-        total_pages = max(1, (len(entries) + per_page - 1) // per_page)
+    def _format_pool_page(self, entries: list, label: str, page: int) -> tuple[str, int]:
+        pages = self._paginate_pool_entries(entries, label)
+        total_pages = len(pages)
         page = max(1, min(page, total_pages))
-        start_index = (page - 1) * per_page
-        page_entries = entries[start_index : start_index + per_page]
-
-        lines = []
-        for index, entry in enumerate(page_entries, start=start_index + 1):
-            title = self._format_link_title(self._entry_title(entry), self._entry_url(entry))
-            author = self._entry_author(entry)
-            if author != "Unknown":
-                lines.append(f"`{index}.` {title} - {author}")
-            else:
-                lines.append(f"`{index}.` {title}")
-
-        return "\n".join(lines), total_pages
+        return pages[page - 1], total_pages
 
     async def _build_library_embed(self, ctx: commands.Context, page: int) -> discord.Embed:
         settings = await self.config.guild(ctx.guild).all()
@@ -591,8 +613,8 @@ class RedAudioRadio(commands.Cog):
         """List configured ad URLs and jingles."""
         embed = await self._build_library_embed(ctx, page)
         settings = await self.config.guild(ctx.guild).all()
-        ad_pages = max(1, (len(settings["ad_urls"]) + 9) // 10)
-        jingle_pages = max(1, (len(settings["jingle_urls"]) + 9) // 10)
+        ad_pages = self._pool_page_count(settings["ad_urls"], "Ads")
+        jingle_pages = self._pool_page_count(settings["jingle_urls"], "Jingles")
         total_pages = max(ad_pages, jingle_pages)
         current_page = max(1, min(page, total_pages))
         view = AdbreakListView(self, ctx, current_page, total_pages)
