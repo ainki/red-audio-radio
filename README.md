@@ -17,6 +17,7 @@ Basic usage:
 4. `[p]adbreak jinglechance 25`
 5. `[p]adbreak toggle`
 6. `[p]adbreak list`
+7. `[p]adbreak list jingles`
 
 Library maintenance commands:
 

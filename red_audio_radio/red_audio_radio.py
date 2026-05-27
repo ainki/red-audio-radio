@@ -17,10 +17,20 @@ except Exception:  # pragma: no cover - audio may not be loaded yet
 
 
 class AdbreakListView(discord.ui.View):
-    def __init__(self, cog: "RedAudioRadio", ctx: commands.Context, current_page: int, total_pages: int):
+    def __init__(
+        self,
+        cog: "RedAudioRadio",
+        ctx: commands.Context,
+        key: str,
+        label: str,
+        current_page: int,
+        total_pages: int,
+    ):
         super().__init__(timeout=180)
         self.cog = cog
         self.ctx = ctx
+        self.key = key
+        self.label = label
         self.current_page = current_page
         self.total_pages = total_pages
         self.message: Optional[discord.Message] = None
@@ -49,14 +59,14 @@ class AdbreakListView(discord.ui.View):
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_page -= 1
         self._sync_buttons()
-        embed = await self.cog._build_library_embed(self.ctx, self.current_page)
+        embed = await self.cog._build_pool_list_embed(self.ctx, self.key, self.label, self.current_page)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_page += 1
         self._sync_buttons()
-        embed = await self.cog._build_library_embed(self.ctx, self.current_page)
+        embed = await self.cog._build_pool_list_embed(self.ctx, self.key, self.label, self.current_page)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
@@ -207,17 +217,14 @@ class RedAudioRadio(commands.Cog):
         page = max(1, min(page, total_pages))
         return pages[page - 1], total_pages
 
-    async def _build_library_embed(self, ctx: commands.Context, page: int) -> discord.Embed:
-        settings = await self.config.guild(ctx.guild).all()
-        ad_entries = settings["ad_urls"]
-        jingle_entries = settings["jingle_urls"]
-        ad_text, ad_pages = self._format_pool_page(ad_entries, "Ads", page)
-        jingle_text, jingle_pages = self._format_pool_page(jingle_entries, "Jingles", page)
-        total_pages = max(ad_pages, jingle_pages)
+    async def _build_pool_list_embed(
+        self, ctx: commands.Context, key: str, label: str, page: int
+    ) -> discord.Embed:
+        entries = await self.config.guild(ctx.guild).get_attr(key)()
+        page_text, total_pages = self._format_pool_page(entries, label, page)
         current_page = max(1, min(page, total_pages))
-        embed = await self._base_embed(ctx, title="Adbreak Library")
-        embed.add_field(name=f"Ads ({len(ad_entries)})", value=ad_text, inline=False)
-        embed.add_field(name=f"Jingles ({len(jingle_entries)})", value=jingle_text, inline=False)
+        embed = await self._base_embed(ctx, title=f"Adbreak {label}")
+        embed.add_field(name=f"{label} ({len(entries)})", value=page_text, inline=False)
         embed.set_footer(text=f"{ctx.guild.name} | Page {current_page}/{total_pages}")
         return embed
 
@@ -606,18 +613,29 @@ class RedAudioRadio(commands.Cog):
         await self.config.guild(ctx.guild).jingle_urls.set(jingle_urls)
         await ctx.send(f"Removed jingle #{index}: {self._entry_title(removed)}")
 
-    @adbreak.command(name="list")
+    @adbreak.group(name="list", invoke_without_command=True)
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def adbreak_list(self, ctx: commands.Context, page: int = 1):
-        """List configured ad URLs and jingles."""
-        embed = await self._build_library_embed(ctx, page)
-        settings = await self.config.guild(ctx.guild).all()
-        ad_pages = self._pool_page_count(settings["ad_urls"], "Ads")
-        jingle_pages = self._pool_page_count(settings["jingle_urls"], "Jingles")
-        total_pages = max(ad_pages, jingle_pages)
+        """List configured ads."""
+        embed = await self._build_pool_list_embed(ctx, "ad_urls", "Ads", page)
+        ad_entries = await self.config.guild(ctx.guild).ad_urls()
+        total_pages = self._pool_page_count(ad_entries, "Ads")
         current_page = max(1, min(page, total_pages))
-        view = AdbreakListView(self, ctx, current_page, total_pages)
+        view = AdbreakListView(self, ctx, "ad_urls", "Ads", current_page, total_pages)
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
+
+    @adbreak_list.command(name="jingles")
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_guild=True)
+    async def adbreak_list_jingles(self, ctx: commands.Context, page: int = 1):
+        """List configured jingles."""
+        embed = await self._build_pool_list_embed(ctx, "jingle_urls", "Jingles", page)
+        jingle_entries = await self.config.guild(ctx.guild).jingle_urls()
+        total_pages = self._pool_page_count(jingle_entries, "Jingles")
+        current_page = max(1, min(page, total_pages))
+        view = AdbreakListView(self, ctx, "jingle_urls", "Jingles", current_page, total_pages)
         message = await ctx.send(embed=embed, view=view)
         view.message = message
 
