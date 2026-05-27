@@ -98,32 +98,59 @@ class RedAudioRadio(commands.Cog):
             embed.set_footer(text=f"{ctx.guild.name}")
         return embed
 
-    def _format_pool_page(self, urls: list[str], label: str, page: int, per_page: int = 10) -> tuple[str, int]:
-        if not urls:
+    def _entry_url(self, entry) -> str:
+        if isinstance(entry, dict):
+            return entry.get("url", "")
+        return str(entry)
+
+    def _entry_title(self, entry) -> str:
+        if isinstance(entry, dict):
+            return entry.get("title") or self._entry_url(entry)
+        return str(entry)
+
+    def _entry_author(self, entry) -> str:
+        if isinstance(entry, dict):
+            return entry.get("author") or "Unknown"
+        return "Unknown"
+
+    def _build_pool_entry(self, track_url: str, track=None) -> dict:
+        return {
+            "url": getattr(track, "uri", None) or track_url,
+            "title": getattr(track, "title", None) or track_url,
+            "author": getattr(track, "author", None) or "Unknown",
+        }
+
+    def _format_pool_page(self, entries: list, label: str, page: int, per_page: int = 10) -> tuple[str, int]:
+        if not entries:
             return f"No {label.lower()} configured.", 1
 
-        total_pages = max(1, (len(urls) + per_page - 1) // per_page)
+        total_pages = max(1, (len(entries) + per_page - 1) // per_page)
         page = max(1, min(page, total_pages))
         start_index = (page - 1) * per_page
-        page_urls = urls[start_index : start_index + per_page]
+        page_entries = entries[start_index : start_index + per_page]
 
         lines = []
-        for index, url in enumerate(page_urls, start=start_index + 1):
-            lines.append(f"`{index}.` {url}")
+        for index, entry in enumerate(page_entries, start=start_index + 1):
+            title = self._entry_title(entry)
+            author = self._entry_author(entry)
+            if author != "Unknown":
+                lines.append(f"`{index}.` {title} - {author}")
+            else:
+                lines.append(f"`{index}.` {title}")
 
         return "\n".join(lines), total_pages
 
     async def _build_library_embed(self, ctx: commands.Context, page: int) -> discord.Embed:
         settings = await self.config.guild(ctx.guild).all()
-        ad_urls = settings["ad_urls"]
-        jingle_urls = settings["jingle_urls"]
-        ad_text, ad_pages = self._format_pool_page(ad_urls, "Ads", page)
-        jingle_text, jingle_pages = self._format_pool_page(jingle_urls, "Jingles", page)
+        ad_entries = settings["ad_urls"]
+        jingle_entries = settings["jingle_urls"]
+        ad_text, ad_pages = self._format_pool_page(ad_entries, "Ads", page)
+        jingle_text, jingle_pages = self._format_pool_page(jingle_entries, "Jingles", page)
         total_pages = max(ad_pages, jingle_pages)
         current_page = max(1, min(page, total_pages))
         embed = await self._base_embed(ctx, title="Adbreak Library")
-        embed.add_field(name=f"Ads ({len(ad_urls)})", value=ad_text, inline=False)
-        embed.add_field(name=f"Jingles ({len(jingle_urls)})", value=jingle_text, inline=False)
+        embed.add_field(name=f"Ads ({len(ad_entries)})", value=ad_text, inline=False)
+        embed.add_field(name=f"Jingles ({len(jingle_entries)})", value=jingle_text, inline=False)
         embed.set_footer(text=f"{ctx.guild.name} | Page {current_page}/{total_pages}")
         return embed
 
@@ -152,8 +179,8 @@ class RedAudioRadio(commands.Cog):
         player: lavalink.Player,
         is_jingle: bool,
     ) -> list:
-        urls = await self.config.guild(guild).get_attr(key)()
-        if not urls or desired_count <= 0:
+        entries = await self.config.guild(guild).get_attr(key)()
+        if not entries or desired_count <= 0:
             return []
 
         cursor_key = "ad_cursor" if key == "ad_urls" else "jingle_cursor"
@@ -161,8 +188,9 @@ class RedAudioRadio(commands.Cog):
         queued_tracks = []
         scanned_count = 0
 
-        while scanned_count < len(urls) and len(queued_tracks) < desired_count:
-            track_url = urls[(cursor + scanned_count) % len(urls)]
+        while scanned_count < len(entries) and len(queued_tracks) < desired_count:
+            entry = entries[(cursor + scanned_count) % len(entries)]
+            track_url = self._entry_url(entry)
             scanned_count += 1
             track = await self._resolve_track(guild, track_url)
             if track is None:
@@ -176,7 +204,7 @@ class RedAudioRadio(commands.Cog):
 
             queued_tracks.append(self._build_break_track(player, guild, track, is_jingle))
 
-        await self.config.guild(guild).get_attr(cursor_key).set((cursor + scanned_count) % len(urls))
+        await self.config.guild(guild).get_attr(cursor_key).set((cursor + scanned_count) % len(entries))
         return queued_tracks
 
     async def _preview_pool_tracks(
@@ -186,16 +214,17 @@ class RedAudioRadio(commands.Cog):
         desired_count: int,
         seen_posters: set[str],
     ) -> tuple[list[dict], int]:
-        urls = await self._pool_urls(guild, key)
-        if not urls or desired_count <= 0:
+        entries = await self._pool_urls(guild, key)
+        if not entries or desired_count <= 0:
             return [], 0
 
         cursor = await self._pool_cursor(guild, key)
         preview_tracks = []
         scanned_count = 0
 
-        while scanned_count < len(urls) and len(preview_tracks) < desired_count:
-            track_url = urls[(cursor + scanned_count) % len(urls)]
+        while scanned_count < len(entries) and len(preview_tracks) < desired_count:
+            entry = entries[(cursor + scanned_count) % len(entries)]
+            track_url = self._entry_url(entry)
             scanned_count += 1
             track = await self._resolve_track(guild, track_url)
             if track is None:
@@ -209,9 +238,9 @@ class RedAudioRadio(commands.Cog):
 
             preview_tracks.append(
                 {
-                    "title": getattr(track, "title", None) or track_url,
-                    "author": getattr(track, "author", None) or "Unknown",
-                    "uri": getattr(track, "uri", None) or track_url,
+                    "title": getattr(track, "title", None) or self._entry_title(entry),
+                    "author": getattr(track, "author", None) or self._entry_author(entry),
+                    "uri": getattr(track, "uri", None) or self._entry_url(entry),
                     "is_jingle": key == "jingle_urls",
                 }
             )
@@ -437,20 +466,22 @@ class RedAudioRadio(commands.Cog):
     @commands.mod_or_permissions(manage_guild=True)
     async def adbreak_add(self, ctx: commands.Context, *, ad_url: str):
         """Add an ad track URL or search URL."""
-        ad_urls = await self.config.guild(ctx.guild).ad_urls()
-        ad_urls.append(ad_url)
-        await self.config.guild(ctx.guild).ad_urls.set(ad_urls)
-        await ctx.send(f"Stored ad #{len(ad_urls)}.")
+        ad_entries = await self.config.guild(ctx.guild).ad_urls()
+        track = await self._resolve_track(ctx.guild, ad_url)
+        ad_entries.append(self._build_pool_entry(ad_url, track))
+        await self.config.guild(ctx.guild).ad_urls.set(ad_entries)
+        await ctx.send(f"Stored ad #{len(ad_entries)}: {self._entry_title(ad_entries[-1])}")
 
     @adbreak.command(name="addjingle")
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def adbreak_addjingle(self, ctx: commands.Context, *, jingle_url: str):
         """Add a station jingle URL or search URL."""
-        jingle_urls = await self.config.guild(ctx.guild).jingle_urls()
-        jingle_urls.append(jingle_url)
-        await self.config.guild(ctx.guild).jingle_urls.set(jingle_urls)
-        await ctx.send(f"Stored jingle #{len(jingle_urls)}.")
+        jingle_entries = await self.config.guild(ctx.guild).jingle_urls()
+        track = await self._resolve_track(ctx.guild, jingle_url)
+        jingle_entries.append(self._build_pool_entry(jingle_url, track))
+        await self.config.guild(ctx.guild).jingle_urls.set(jingle_entries)
+        await ctx.send(f"Stored jingle #{len(jingle_entries)}: {self._entry_title(jingle_entries[-1])}")
 
     @adbreak.command(name="remove")
     @commands.guild_only()
@@ -462,7 +493,7 @@ class RedAudioRadio(commands.Cog):
             return await ctx.send("That ad number does not exist.")
         removed = ad_urls.pop(index - 1)
         await self.config.guild(ctx.guild).ad_urls.set(ad_urls)
-        await ctx.send(f"Removed ad #{index}: {removed}")
+        await ctx.send(f"Removed ad #{index}: {self._entry_title(removed)}")
 
     @adbreak.command(name="removejingle")
     @commands.guild_only()
@@ -474,7 +505,7 @@ class RedAudioRadio(commands.Cog):
             return await ctx.send("That jingle number does not exist.")
         removed = jingle_urls.pop(index - 1)
         await self.config.guild(ctx.guild).jingle_urls.set(jingle_urls)
-        await ctx.send(f"Removed jingle #{index}: {removed}")
+        await ctx.send(f"Removed jingle #{index}: {self._entry_title(removed)}")
 
     @adbreak.command(name="list")
     @commands.guild_only()
