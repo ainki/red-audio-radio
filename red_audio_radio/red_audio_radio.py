@@ -120,6 +120,33 @@ class RedAudioRadio(commands.Cog):
             "author": getattr(track, "author", None) or "Unknown",
         }
 
+    async def _refresh_pool_metadata(self, guild: discord.Guild, key: str) -> tuple[int, int, int]:
+        entries = await self.config.guild(guild).get_attr(key)()
+        if not entries:
+            return 0, 0, 0
+
+        refreshed_entries = []
+        updated_count = 0
+        failed_count = 0
+
+        for entry in entries:
+            track_url = self._entry_url(entry)
+            track = await self._resolve_track(guild, track_url)
+            if track is None:
+                refreshed_entries.append(self._build_pool_entry(track_url))
+                failed_count += 1
+                continue
+
+            new_entry = self._build_pool_entry(track_url, track)
+            old_title = self._entry_title(entry)
+            old_author = self._entry_author(entry)
+            if new_entry["title"] != old_title or new_entry["author"] != old_author or not isinstance(entry, dict):
+                updated_count += 1
+            refreshed_entries.append(new_entry)
+
+        await self.config.guild(guild).get_attr(key).set(refreshed_entries)
+        return len(entries), updated_count, failed_count
+
     def _format_pool_page(self, entries: list, label: str, page: int, per_page: int = 10) -> tuple[str, int]:
         if not entries:
             return f"No {label.lower()} configured.", 1
@@ -482,6 +509,41 @@ class RedAudioRadio(commands.Cog):
         jingle_entries.append(self._build_pool_entry(jingle_url, track))
         await self.config.guild(ctx.guild).jingle_urls.set(jingle_entries)
         await ctx.send(f"Stored jingle #{len(jingle_entries)}: {self._entry_title(jingle_entries[-1])}")
+
+    @adbreak.command(name="refreshmeta")
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_guild=True)
+    async def adbreak_refreshmeta(self, ctx: commands.Context):
+        """Refresh saved titles and authors for all ads and jingles."""
+        ad_total, ad_updated, ad_failed = await self._refresh_pool_metadata(ctx.guild, "ad_urls")
+        jingle_total, jingle_updated, jingle_failed = await self._refresh_pool_metadata(
+            ctx.guild, "jingle_urls"
+        )
+
+        embed = await self._base_embed(
+            ctx,
+            title="Metadata Refresh Complete",
+            description="Saved adbreak titles and authors have been refreshed.",
+        )
+        embed.add_field(
+            name="Ads",
+            value=(
+                f"Checked: {ad_total}\n"
+                f"Updated: {ad_updated}\n"
+                f"Failed to resolve: {ad_failed}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Jingles",
+            value=(
+                f"Checked: {jingle_total}\n"
+                f"Updated: {jingle_updated}\n"
+                f"Failed to resolve: {jingle_failed}"
+            ),
+            inline=True,
+        )
+        await ctx.send(embed=embed)
 
     @adbreak.command(name="remove")
     @commands.guild_only()
