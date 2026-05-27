@@ -125,6 +125,11 @@ class RedAudioRadio(commands.Cog):
             return f"[{safe_title}]({url})"
         return safe_title
 
+    def _shuffled_entries(self, entries: list) -> list:
+        shuffled_entries = list(entries)
+        random.shuffle(shuffled_entries)
+        return shuffled_entries
+
     def _build_pool_entry(self, track_url: str, track=None) -> dict:
         return {
             "url": getattr(track, "uri", None) or track_url,
@@ -222,15 +227,10 @@ class RedAudioRadio(commands.Cog):
         if not entries or desired_count <= 0:
             return []
 
-        cursor_key = "ad_cursor" if key == "ad_urls" else "jingle_cursor"
-        cursor = await self.config.guild(guild).get_attr(cursor_key)()
         queued_tracks = []
-        scanned_count = 0
 
-        while scanned_count < len(entries) and len(queued_tracks) < desired_count:
-            entry = entries[(cursor + scanned_count) % len(entries)]
+        for entry in self._shuffled_entries(entries):
             track_url = self._entry_url(entry)
-            scanned_count += 1
             track = await self._resolve_track(guild, track_url)
             if track is None:
                 continue
@@ -242,8 +242,9 @@ class RedAudioRadio(commands.Cog):
                 seen_posters.add(poster_key)
 
             queued_tracks.append(self._build_break_track(player, guild, track, is_jingle))
+            if len(queued_tracks) >= desired_count:
+                break
 
-        await self.config.guild(guild).get_attr(cursor_key).set((cursor + scanned_count) % len(entries))
         return queued_tracks
 
     async def _preview_pool_tracks(
@@ -257,12 +258,10 @@ class RedAudioRadio(commands.Cog):
         if not entries or desired_count <= 0:
             return [], 0
 
-        cursor = await self._pool_cursor(guild, key)
         preview_tracks = []
         scanned_count = 0
 
-        while scanned_count < len(entries) and len(preview_tracks) < desired_count:
-            entry = entries[(cursor + scanned_count) % len(entries)]
+        for entry in self._shuffled_entries(entries):
             track_url = self._entry_url(entry)
             scanned_count += 1
             track = await self._resolve_track(guild, track_url)
@@ -283,6 +282,9 @@ class RedAudioRadio(commands.Cog):
                     "is_jingle": key == "jingle_urls",
                 }
             )
+
+            if len(preview_tracks) >= desired_count:
+                break
 
         return preview_tracks, scanned_count
 
@@ -424,8 +426,7 @@ class RedAudioRadio(commands.Cog):
         embed.add_field(name="Ads Stored", value=str(len(settings["ad_urls"])), inline=True)
         embed.add_field(name="Jingles Stored", value=str(len(settings["jingle_urls"])), inline=True)
         embed.add_field(name="Jingle Chance", value=f"{settings['jingle_chance']}%", inline=True)
-        embed.add_field(name="Ad Cursor", value=str(settings["ad_cursor"]), inline=True)
-        embed.add_field(name="Jingle Cursor", value=str(settings["jingle_cursor"]), inline=True)
+        embed.add_field(name="Selection Mode", value="Randomized per break", inline=True)
         if player is not None:
             now_playing = getattr(player, "current", None)
             embed.add_field(name="Currently Playing", value="Yes" if now_playing else "No", inline=True)
