@@ -352,19 +352,27 @@ class RedAudioRadio(commands.Cog):
 
         if break_jingles_enabled:
             jingle_tracks = await self._preview_break_jingle(guild, seen_posters)
+            for track in jingle_tracks:
+                track["slot"] = "Start Jingle"
             tracks.extend(jingle_tracks)
 
         ad_tracks, _ = await self._preview_pool_tracks(guild, "ad_urls", ad_count, seen_posters)
+        for track in ad_tracks:
+            track["slot"] = "Ad"
         tracks.extend(ad_tracks)
 
         if break_jingles_enabled:
             closing_jingle_tracks = await self._preview_break_jingle(guild, seen_posters)
+            for track in closing_jingle_tracks:
+                track["slot"] = "End Jingle"
             tracks.extend(closing_jingle_tracks)
 
         standalone_jingle = bool(settings["jingle_urls"]) and random.randint(1, 100) <= settings["jingle_chance"]
         standalone_tracks = []
         if standalone_jingle:
             standalone_tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, set())
+            for track in standalone_tracks:
+                track["slot"] = "Between-Song Jingle"
 
         next_break = self._pick_break_interval(
             settings["min_songs_until_break"], settings["max_songs_until_break"]
@@ -563,9 +571,9 @@ class RedAudioRadio(commands.Cog):
         if preview["tracks"]:
             preview_lines = []
             for index, track in enumerate(preview["tracks"], start=1):
-                kind = "Jingle" if track["is_jingle"] else "Ad"
                 title = self._format_link_title(track["title"], track["uri"])
-                preview_lines.append(f"`{index}.` [{kind}] {title} - {track['author']}")
+                label = track.get("slot") or ("Jingle" if track["is_jingle"] else "Ad")
+                preview_lines.append(f"`{index}.` [{label}] {title} - {track['author']}")
             embed.add_field(name="Preview Tracks", value="\n".join(preview_lines[:10]), inline=False)
         else:
             embed.add_field(name="Preview Tracks", value="No playable tracks would be selected right now.", inline=False)
@@ -574,7 +582,7 @@ class RedAudioRadio(commands.Cog):
             standalone_lines = []
             for index, track in enumerate(preview["standalone_tracks"], start=1):
                 title = self._format_link_title(track["title"], track["uri"])
-                standalone_lines.append(f"`{index}.` {title} - {track['author']}")
+                standalone_lines.append(f"`{index}.` [{track.get('slot', 'Jingle')}] {title} - {track['author']}")
             embed.add_field(name="Between-Song Jingle", value="\n".join(standalone_lines), inline=False)
         await ctx.send(embed=embed)
 
