@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import random
 from types import SimpleNamespace
 from typing import Optional
@@ -13,6 +14,57 @@ try:
     from redbot.cogs.audio.audio_dataclasses import Query
 except Exception:  # pragma: no cover - audio may not be loaded yet
     Query = None
+
+
+class AdbreakListView(discord.ui.View):
+    def __init__(self, cog: "RedAudioRadio", ctx: commands.Context, current_page: int, total_pages: int):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.ctx = ctx
+        self.current_page = current_page
+        self.total_pages = total_pages
+        self.message: Optional[discord.Message] = None
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        self.previous_page.disabled = self.current_page <= 1
+        self.next_page.disabled = self.current_page >= self.total_pages
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the command invoker can use these controls.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page -= 1
+        self._sync_buttons()
+        embed = await self.cog._build_library_embed(self.ctx, self.current_page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page += 1
+        self._sync_buttons()
+        embed = await self.cog._build_library_embed(self.ctx, self.current_page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
 
 
 class RedAudioRadio(commands.Cog):
@@ -35,6 +87,45 @@ class RedAudioRadio(commands.Cog):
 
     def _audio_cog(self):
         return self.bot.get_cog("Audio")
+
+    async def _base_embed(self, ctx: commands.Context, title: str, description: str | None = None):
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            colour=await ctx.embed_colour(),
+        )
+        if ctx.guild is not None:
+            embed.set_footer(text=f"{ctx.guild.name}")
+        return embed
+
+    def _format_pool_page(self, urls: list[str], label: str, page: int, per_page: int = 10) -> tuple[str, int]:
+        if not urls:
+            return f"No {label.lower()} configured.", 1
+
+        total_pages = max(1, (len(urls) + per_page - 1) // per_page)
+        page = max(1, min(page, total_pages))
+        start_index = (page - 1) * per_page
+        page_urls = urls[start_index : start_index + per_page]
+
+        lines = []
+        for index, url in enumerate(page_urls, start=start_index + 1):
+            lines.append(f"`{index}.` {url}")
+
+        return "\n".join(lines), total_pages
+
+    async def _build_library_embed(self, ctx: commands.Context, page: int) -> discord.Embed:
+        settings = await self.config.guild(ctx.guild).all()
+        ad_urls = settings["ad_urls"]
+        jingle_urls = settings["jingle_urls"]
+        ad_text, ad_pages = self._format_pool_page(ad_urls, "Ads", page)
+        jingle_text, jingle_pages = self._format_pool_page(jingle_urls, "Jingles", page)
+        total_pages = max(ad_pages, jingle_pages)
+        current_page = max(1, min(page, total_pages))
+        embed = await self._base_embed(ctx, title="Adbreak Library")
+        embed.add_field(name=f"Ads ({len(ad_urls)})", value=ad_text, inline=False)
+        embed.add_field(name=f"Jingles ({len(jingle_urls)})", value=jingle_text, inline=False)
+        embed.set_footer(text=f"{ctx.guild.name} | Page {current_page}/{total_pages}")
+        return embed
 
     def _pick_break_interval(self, minimum: int, maximum: int) -> int:
         if minimum <= 0 or maximum <= 0:
@@ -227,15 +318,22 @@ class RedAudioRadio(commands.Cog):
         status = "enabled" if settings["enabled"] else "disabled"
         ad_urls = settings["ad_urls"]
         jingle_urls = settings["jingle_urls"]
-        await ctx.send(
-            "Ad breaks are {status}. Ads: {ads}. Jingles: {jingles}. Interval: {minimum}-{maximum} song(s). Each break inserts 1-3 ads.".format(
+        embed = await self._base_embed(
+            ctx,
+            title="Adbreak Overview",
+            description=(
+                "Ad breaks are **{status}**. Interval: **{minimum}-{maximum}** song(s). "
+                "Each break inserts **1-3** ads."
+            ).format(
                 status=status,
-                ads=len(ad_urls),
-                jingles=len(jingle_urls),
                 minimum=settings["min_songs_until_break"],
                 maximum=settings["max_songs_until_break"],
-            )
+            ),
         )
+        embed.add_field(name="Ads", value=str(len(ad_urls)), inline=True)
+        embed.add_field(name="Jingles", value=str(len(jingle_urls)), inline=True)
+        embed.add_field(name="Next Break", value=f"{settings['break_counter']} song(s)", inline=True)
+        await ctx.send(embed=embed)
 
     @adbreak.command(name="status")
     @commands.guild_only()
@@ -247,23 +345,24 @@ class RedAudioRadio(commands.Cog):
             player = lavalink.get_player(ctx.guild.id)
         except Exception:
             player = None
-
-        lines = [
-            f"Enabled: {'yes' if settings['enabled'] else 'no'}",
-            f"Ads stored: {len(settings['ad_urls'])}",
-            f"Jingles stored: {len(settings['jingle_urls'])}",
-            f"Interval range: {settings['min_songs_until_break']}-{settings['max_songs_until_break']} song(s)",
-            f"Songs until next break: {settings['break_counter']}",
-            f"Jingle chance: {settings['jingle_chance']}%",
-            f"Ad cursor: {settings['ad_cursor']}",
-            f"Jingle cursor: {settings['jingle_cursor']}",
-        ]
-
+        embed = await self._base_embed(ctx, title="Adbreak Status")
+        embed.add_field(name="Enabled", value="Yes" if settings["enabled"] else "No", inline=True)
+        embed.add_field(
+            name="Interval Range",
+            value=f"{settings['min_songs_until_break']}-{settings['max_songs_until_break']} song(s)",
+            inline=True,
+        )
+        embed.add_field(name="Next Break", value=f"{settings['break_counter']} song(s)", inline=True)
+        embed.add_field(name="Ads Stored", value=str(len(settings["ad_urls"])), inline=True)
+        embed.add_field(name="Jingles Stored", value=str(len(settings["jingle_urls"])), inline=True)
+        embed.add_field(name="Jingle Chance", value=f"{settings['jingle_chance']}%", inline=True)
+        embed.add_field(name="Ad Cursor", value=str(settings["ad_cursor"]), inline=True)
+        embed.add_field(name="Jingle Cursor", value=str(settings["jingle_cursor"]), inline=True)
         if player is not None:
-            lines.append(f"Currently playing: {'yes' if getattr(player, 'current', None) else 'no'}")
-            lines.append(f"Queued tracks: {len(getattr(player, 'queue', []))}")
-
-        await ctx.send("\n".join(lines))
+            now_playing = getattr(player, "current", None)
+            embed.add_field(name="Currently Playing", value="Yes" if now_playing else "No", inline=True)
+            embed.add_field(name="Queued Tracks", value=str(len(getattr(player, "queue", []))), inline=True)
+        await ctx.send(embed=embed)
 
     @adbreak.command(name="preview")
     @commands.guild_only()
@@ -272,25 +371,29 @@ class RedAudioRadio(commands.Cog):
         """Preview the next adbreak selection without changing cursors or queue."""
         preview = await self._preview_break(ctx.guild)
         settings = preview["settings"]
-
-        lines = [
-            f"Current countdown: {settings['break_counter']} song(s)",
-            f"Configured interval: {settings['min_songs_until_break']}-{settings['max_songs_until_break']} song(s)",
-            f"Next countdown after this break would be: {preview['next_break']} song(s)",
-            f"Target ads for this break: {preview['ad_count_target']}",
-            f"Jingle selected: {'yes' if preview['use_jingle'] else 'no'}",
-            "",
-            "Preview tracks:",
-        ]
-
+        embed = await self._base_embed(
+            ctx,
+            title="Adbreak Preview",
+            description="Simulation only. This does not change cursors or queue state.",
+        )
+        embed.add_field(name="Current Countdown", value=f"{settings['break_counter']} song(s)", inline=True)
+        embed.add_field(
+            name="Configured Interval",
+            value=f"{settings['min_songs_until_break']}-{settings['max_songs_until_break']} song(s)",
+            inline=True,
+        )
+        embed.add_field(name="Next Countdown", value=f"{preview['next_break']} song(s)", inline=True)
+        embed.add_field(name="Target Ads", value=str(preview["ad_count_target"]), inline=True)
+        embed.add_field(name="Jingle Selected", value="Yes" if preview["use_jingle"] else "No", inline=True)
         if preview["tracks"]:
+            preview_lines = []
             for index, track in enumerate(preview["tracks"], start=1):
                 kind = "Jingle" if track["is_jingle"] else "Ad"
-                lines.append(f"{index}. [{kind}] {track['title']} | {track['author']}")
+                preview_lines.append(f"`{index}.` [{kind}] {track['title']} - {track['author']}")
+            embed.add_field(name="Preview Tracks", value="\n".join(preview_lines[:10]), inline=False)
         else:
-            lines.append("No playable tracks would be selected right now.")
-
-        await ctx.send("\n".join(lines))
+            embed.add_field(name="Preview Tracks", value="No playable tracks would be selected right now.", inline=False)
+        await ctx.send(embed=embed)
 
     @adbreak.command(name="toggle")
     @commands.guild_only()
@@ -376,23 +479,17 @@ class RedAudioRadio(commands.Cog):
     @adbreak.command(name="list")
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
-    async def adbreak_list(self, ctx: commands.Context):
+    async def adbreak_list(self, ctx: commands.Context, page: int = 1):
         """List configured ad URLs and jingles."""
+        embed = await self._build_library_embed(ctx, page)
         settings = await self.config.guild(ctx.guild).all()
-        ad_urls = settings["ad_urls"]
-        jingle_urls = settings["jingle_urls"]
-        lines = ["Ads:"]
-        if ad_urls:
-            lines.extend(f"{idx}. {url}" for idx, url in enumerate(ad_urls, start=1))
-        else:
-            lines.append("None configured.")
-        lines.append("")
-        lines.append("Jingles:")
-        if jingle_urls:
-            lines.extend(f"{idx}. {url}" for idx, url in enumerate(jingle_urls, start=1))
-        else:
-            lines.append("None configured.")
-        await ctx.send("\n".join(lines))
+        ad_pages = max(1, (len(settings["ad_urls"]) + 9) // 10)
+        jingle_pages = max(1, (len(settings["jingle_urls"]) + 9) // 10)
+        total_pages = max(ad_pages, jingle_pages)
+        current_page = max(1, min(page, total_pages))
+        view = AdbreakListView(self, ctx, current_page, total_pages)
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
 
     @adbreak.command(name="resetcounter")
     @commands.guild_only()
