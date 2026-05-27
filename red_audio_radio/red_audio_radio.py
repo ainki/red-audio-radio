@@ -322,22 +322,14 @@ class RedAudioRadio(commands.Cog):
     async def _collect_break_jingle(
         self,
         guild: discord.Guild,
-        seen_posters: set[str],
         player: lavalink.Player,
     ) -> list:
-        tracks = await self._collect_pool_tracks(guild, "jingle_urls", 1, seen_posters, player, True)
-        if tracks:
-            return tracks
         return await self._collect_pool_tracks(guild, "jingle_urls", 1, set(), player, True)
 
     async def _preview_break_jingle(
         self,
         guild: discord.Guild,
-        seen_posters: set[str],
     ) -> list[dict]:
-        tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, seen_posters)
-        if tracks:
-            return tracks
         tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, set())
         return tracks
 
@@ -351,7 +343,7 @@ class RedAudioRadio(commands.Cog):
         )
 
         if break_jingles_enabled:
-            jingle_tracks = await self._preview_break_jingle(guild, seen_posters)
+            jingle_tracks = await self._preview_break_jingle(guild)
             for track in jingle_tracks:
                 track["slot"] = "Start Jingle"
             tracks.extend(jingle_tracks)
@@ -362,7 +354,7 @@ class RedAudioRadio(commands.Cog):
         tracks.extend(ad_tracks)
 
         if break_jingles_enabled:
-            closing_jingle_tracks = await self._preview_break_jingle(guild, seen_posters)
+            closing_jingle_tracks = await self._preview_break_jingle(guild)
             for track in closing_jingle_tracks:
                 track["slot"] = "End Jingle"
             tracks.extend(closing_jingle_tracks)
@@ -813,7 +805,7 @@ class RedAudioRadio(commands.Cog):
         seen_posters = set()
 
         if break_jingles_enabled:
-            queued_tracks.extend(await self._collect_break_jingle(guild, seen_posters, player))
+            queued_tracks.extend(await self._collect_break_jingle(guild, player))
 
         queued_tracks.extend(
             await self._collect_pool_tracks(
@@ -822,7 +814,7 @@ class RedAudioRadio(commands.Cog):
         )
 
         if break_jingles_enabled:
-            queued_tracks.extend(await self._collect_break_jingle(guild, seen_posters, player))
+            queued_tracks.extend(await self._collect_break_jingle(guild, player))
 
         if not queued_tracks:
             return
