@@ -319,6 +319,28 @@ class RedAudioRadio(commands.Cog):
 
         return preview_tracks, scanned_count
 
+    async def _collect_break_jingle(
+        self,
+        guild: discord.Guild,
+        seen_posters: set[str],
+        player: lavalink.Player,
+    ) -> list:
+        tracks = await self._collect_pool_tracks(guild, "jingle_urls", 1, seen_posters, player, True)
+        if tracks:
+            return tracks
+        return await self._collect_pool_tracks(guild, "jingle_urls", 1, set(), player, True)
+
+    async def _preview_break_jingle(
+        self,
+        guild: discord.Guild,
+        seen_posters: set[str],
+    ) -> list[dict]:
+        tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, seen_posters)
+        if tracks:
+            return tracks
+        tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, set())
+        return tracks
+
     async def _preview_break(self, guild: discord.Guild) -> dict:
         settings = await self.config.guild(guild).all()
         ad_count = min(len(settings["ad_urls"]), random.randint(1, 3))
@@ -329,14 +351,14 @@ class RedAudioRadio(commands.Cog):
         )
 
         if break_jingles_enabled:
-            jingle_tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, seen_posters)
+            jingle_tracks = await self._preview_break_jingle(guild, seen_posters)
             tracks.extend(jingle_tracks)
 
         ad_tracks, _ = await self._preview_pool_tracks(guild, "ad_urls", ad_count, seen_posters)
         tracks.extend(ad_tracks)
 
         if break_jingles_enabled:
-            closing_jingle_tracks, _ = await self._preview_pool_tracks(guild, "jingle_urls", 1, seen_posters)
+            closing_jingle_tracks = await self._preview_break_jingle(guild, seen_posters)
             tracks.extend(closing_jingle_tracks)
 
         standalone_jingle = bool(settings["jingle_urls"]) and random.randint(1, 100) <= settings["jingle_chance"]
@@ -783,11 +805,7 @@ class RedAudioRadio(commands.Cog):
         seen_posters = set()
 
         if break_jingles_enabled:
-            queued_tracks.extend(
-                await self._collect_pool_tracks(
-                    guild, "jingle_urls", 1, seen_posters, player, True
-                )
-            )
+            queued_tracks.extend(await self._collect_break_jingle(guild, seen_posters, player))
 
         queued_tracks.extend(
             await self._collect_pool_tracks(
@@ -796,11 +814,7 @@ class RedAudioRadio(commands.Cog):
         )
 
         if break_jingles_enabled:
-            queued_tracks.extend(
-                await self._collect_pool_tracks(
-                    guild, "jingle_urls", 1, seen_posters, player, True
-                )
-            )
+            queued_tracks.extend(await self._collect_break_jingle(guild, seen_posters, player))
 
         if not queued_tracks:
             return
