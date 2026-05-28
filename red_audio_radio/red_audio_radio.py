@@ -439,7 +439,10 @@ class RedAudioRadio(commands.Cog):
 
     async def _resolve_track(self, guild: discord.Guild, track_url: str):
         audio_cog = self._audio_cog()
-        player = lavalink.get_player(guild.id)
+        try:
+            player = lavalink.get_player(guild.id)
+        except Exception:
+            player = None
 
         if audio_cog is not None and getattr(audio_cog, "api_interface", None) is not None:
             if Query is not None:
@@ -459,6 +462,9 @@ class RedAudioRadio(commands.Cog):
                     return result.tracks[0]
             except Exception:
                 pass
+
+        if player is None:
+            return None
 
         result = await player.load_tracks(track_url)
         if result and getattr(result, "tracks", None):
