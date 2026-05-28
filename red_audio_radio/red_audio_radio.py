@@ -102,6 +102,16 @@ class RedAudioRadio(commands.Cog):
     def _audio_cog(self):
         return self.bot.get_cog("Audio")
 
+    async def _audio_autoplay_enabled(self, guild: discord.Guild) -> bool:
+        audio_cog = self._audio_cog()
+        if audio_cog is None or not hasattr(audio_cog, "config"):
+            return False
+
+        try:
+            return await audio_cog.config.guild(guild).auto_play()
+        except Exception:
+            return False
+
     async def _base_embed(self, ctx: commands.Context, title: str, description: str | None = None):
         embed = discord.Embed(
             title=title,
@@ -828,7 +838,8 @@ class RedAudioRadio(commands.Cog):
             return
 
         player = lavalink.get_player(guild.id)
-        if not player.queue:
+        autoplay_enabled = await self._audio_autoplay_enabled(guild)
+        if not player.queue and not autoplay_enabled:
             return
 
         min_songs_until_break = settings["min_songs_until_break"]
