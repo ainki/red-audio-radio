@@ -83,6 +83,7 @@ class RedAudioRadio(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._pending_break_tracks: dict[int, int] = {}
+        self._pre_break_volume: dict[int, int] = {}
         self.config = Config.get_conf(self, identifier=2310625601, force_registration=True)
         self.config.register_guild(
             enabled=False,
@@ -95,6 +96,7 @@ class RedAudioRadio(commands.Cog):
             break_counter=0,
             jingle_chance=25,
             break_jingles_enabled=True,
+            adbreak_volume=None,
         )
 
     def _audio_cog(self):
@@ -437,6 +439,32 @@ class RedAudioRadio(commands.Cog):
         track.requester = guild.me
         return track
 
+    async def _apply_break_volume(self, guild: discord.Guild, player: lavalink.Player, settings: dict) -> None:
+        adbreak_volume = settings.get("adbreak_volume")
+        if adbreak_volume is None:
+            return
+
+        current_volume = getattr(player, "volume", None)
+        if current_volume is None:
+            return
+
+        self._pre_break_volume[guild.id] = current_volume
+        if current_volume == adbreak_volume:
+            return
+
+        with contextlib.suppress(Exception):
+            await player.set_volume(adbreak_volume)
+
+    async def _restore_break_volume(self, guild: discord.Guild) -> None:
+        previous_volume = self._pre_break_volume.pop(guild.id, None)
+        if previous_volume is None:
+            return
+
+        with contextlib.suppress(Exception):
+            player = lavalink.get_player(guild.id)
+            if getattr(player, "volume", None) != previous_volume:
+                await player.set_volume(previous_volume)
+
     async def _resolve_track(self, guild: discord.Guild, track_url: str):
         audio_cog = self._audio_cog()
         try:
@@ -501,6 +529,11 @@ class RedAudioRadio(commands.Cog):
             value="Yes" if settings["break_jingles_enabled"] else "No",
             inline=True,
         )
+        embed.add_field(
+            name="Adbreak Volume",
+            value=str(settings["adbreak_volume"]) if settings["adbreak_volume"] is not None else "Unchanged",
+            inline=True,
+        )
         await ctx.send(embed=embed)
 
     @adbreak.command(name="status")
@@ -527,6 +560,11 @@ class RedAudioRadio(commands.Cog):
         embed.add_field(
             name="Break Start/End Jingles",
             value="Yes" if settings["break_jingles_enabled"] else "No",
+            inline=True,
+        )
+        embed.add_field(
+            name="Adbreak Volume",
+            value=str(settings["adbreak_volume"]) if settings["adbreak_volume"] is not None else "Unchanged",
             inline=True,
         )
         embed.add_field(name="Selection Mode", value="Randomized per break", inline=True)
@@ -631,6 +669,16 @@ class RedAudioRadio(commands.Cog):
             enabled = not current
         await self.config.guild(ctx.guild).break_jingles_enabled.set(enabled)
         await ctx.send(f"Break start/end jingles are now {'enabled' if enabled else 'disabled'}.")
+
+    @adbreak.command(name="volume")
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_guild=True)
+    async def adbreak_volume(self, ctx: commands.Context, volume: int):
+        """Set the playback volume used during ad breaks."""
+        if volume < 1 or volume > 150:
+            return await ctx.send("Adbreak volume must be between 1 and 150.")
+        await self.config.guild(ctx.guild).adbreak_volume.set(volume)
+        await ctx.send(f"Adbreak volume set to {volume}.")
 
     @adbreak.command(name="add")
     @commands.guild_only()
@@ -765,6 +813,7 @@ class RedAudioRadio(commands.Cog):
                 self._pending_break_tracks[guild.id] = remaining_tracks
             else:
                 self._pending_break_tracks.pop(guild.id, None)
+                await self._restore_break_volume(guild)
             return
 
         extras = getattr(track, "extras", {}) or {}
@@ -825,6 +874,7 @@ class RedAudioRadio(commands.Cog):
         if not queued_tracks:
             return
 
+        await self._apply_break_volume(guild, player, settings)
         await self._enqueue_injected_tracks(guild, player, queued_tracks)
 
     @commands.command()
