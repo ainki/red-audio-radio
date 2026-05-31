@@ -5,6 +5,7 @@ from pathlib import Path
 import random
 from types import SimpleNamespace
 from typing import Optional
+from urllib.parse import unquote, urlparse
 
 import discord
 import lavalink
@@ -161,11 +162,16 @@ class RedAudioRadio(commands.Cog):
             return source
 
         if source.startswith("file://"):
+            parsed = urlparse(source)
+            if parsed.scheme == "file":
+                local_path = unquote(parsed.path or "")
+                if local_path:
+                    return local_path
             return source
 
         candidate_path = Path(source).expanduser()
         if candidate_path.is_file():
-            return candidate_path.resolve().as_uri()
+            return str(candidate_path.resolve())
 
         return source
 

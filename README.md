@@ -29,7 +29,7 @@ Behavior notes:
 4. `adbreak volume 120` sets the playback volume used during ad breaks, from 1 to 150, and restores the previous volume when the break ends.
 5. `adbreak list` shows the ad pool only.
 6. `adbreak list jingles` shows the jingle pool only.
-7. Local files are accepted when you pass a filesystem path to a file Red Audio/Lavalink can decode. Existing local paths are normalized to `file://` URIs before lookup.
+7. Local files are accepted when you pass a filesystem path to a file Red Audio/Lavalink can decode. If a `file://` URI is provided, it is converted back to a filesystem path before lookup.
 
 Library maintenance commands:
 
