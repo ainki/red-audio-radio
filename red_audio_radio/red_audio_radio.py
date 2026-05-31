@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 import random
 from types import SimpleNamespace
 from typing import Optional
@@ -153,6 +154,20 @@ class RedAudioRadio(commands.Cog):
         shuffled_entries = list(entries)
         random.shuffle(shuffled_entries)
         return shuffled_entries
+
+    def _normalize_track_source(self, source: str) -> str:
+        source = source.strip()
+        if not source:
+            return source
+
+        if source.startswith("file://"):
+            return source
+
+        candidate_path = Path(source).expanduser()
+        if candidate_path.is_file():
+            return candidate_path.resolve().as_uri()
+
+        return source
 
     def _format_pool_line(self, index: int, entry) -> str:
         title = self._format_link_title(self._entry_title(entry), self._entry_url(entry))
@@ -476,6 +491,7 @@ class RedAudioRadio(commands.Cog):
                 await player.set_volume(previous_volume)
 
     async def _resolve_track(self, guild: discord.Guild, track_url: str):
+        track_url = self._normalize_track_source(track_url)
         audio_cog = self._audio_cog()
         try:
             player = lavalink.get_player(guild.id)
@@ -694,10 +710,11 @@ class RedAudioRadio(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def adbreak_add(self, ctx: commands.Context, *, ad_url: str):
-        """Add an ad track URL or search URL."""
+        """Add an ad track URL, local file path, or search query."""
         ad_entries = await self.config.guild(ctx.guild).ad_urls()
-        track = await self._resolve_track(ctx.guild, ad_url)
-        ad_entries.append(self._build_pool_entry(ad_url, track))
+        normalized_source = self._normalize_track_source(ad_url)
+        track = await self._resolve_track(ctx.guild, normalized_source)
+        ad_entries.append(self._build_pool_entry(normalized_source, track))
         await self.config.guild(ctx.guild).ad_urls.set(ad_entries)
         await ctx.send(f"Stored ad #{len(ad_entries)}: {self._entry_title(ad_entries[-1])}")
 
@@ -705,10 +722,11 @@ class RedAudioRadio(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def adbreak_addjingle(self, ctx: commands.Context, *, jingle_url: str):
-        """Add a station jingle URL or search URL."""
+        """Add a station jingle URL, local file path, or search query."""
         jingle_entries = await self.config.guild(ctx.guild).jingle_urls()
-        track = await self._resolve_track(ctx.guild, jingle_url)
-        jingle_entries.append(self._build_pool_entry(jingle_url, track))
+        normalized_source = self._normalize_track_source(jingle_url)
+        track = await self._resolve_track(ctx.guild, normalized_source)
+        jingle_entries.append(self._build_pool_entry(normalized_source, track))
         await self.config.guild(ctx.guild).jingle_urls.set(jingle_entries)
         await ctx.send(f"Stored jingle #{len(jingle_entries)}: {self._entry_title(jingle_entries[-1])}")
 
