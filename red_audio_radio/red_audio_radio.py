@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from pathlib import Path
 import random
 from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
+import aiohttp
 import discord
 import lavalink
 
@@ -16,6 +18,9 @@ try:
     from redbot.cogs.audio.audio_dataclasses import Query
 except Exception:  # pragma: no cover - audio may not be loaded yet
     Query = None
+
+
+log = logging.getLogger("red.red_audio_radio")
 
 
 class AdbreakListView(discord.ui.View):
@@ -123,6 +128,23 @@ class RedAudioRadio(commands.Cog):
         if ctx.guild is not None:
             embed.set_footer(text=f"{ctx.guild.name}")
         return embed
+
+    async def _safe_ctx_send(self, ctx: commands.Context, *args, **kwargs):
+        try:
+            return await ctx.send(*args, **kwargs)
+        except aiohttp.ClientConnectorError as exc:
+            log.warning(
+                "Failed to send Discord message for guild %s due to DNS/connectivity issue: %s",
+                getattr(ctx.guild, "id", "dm"),
+                exc,
+            )
+        except (aiohttp.ClientError, discord.HTTPException, OSError) as exc:
+            log.warning(
+                "Failed to send Discord message for guild %s due to network/http error: %s",
+                getattr(ctx.guild, "id", "dm"),
+                exc,
+            )
+        return None
 
     def _entry_url(self, entry) -> str:
         if isinstance(entry, dict):
@@ -566,7 +588,7 @@ class RedAudioRadio(commands.Cog):
             value=str(settings["adbreak_volume"]) if settings["adbreak_volume"] is not None else "Unchanged",
             inline=True,
         )
-        await ctx.send(embed=embed)
+        await self._safe_ctx_send(ctx, embed=embed)
 
     @adbreak.command(name="status")
     @commands.guild_only()
@@ -604,7 +626,7 @@ class RedAudioRadio(commands.Cog):
             now_playing = getattr(player, "current", None)
             embed.add_field(name="Currently Playing", value="Yes" if now_playing else "No", inline=True)
             embed.add_field(name="Queued Tracks", value=str(len(getattr(player, "queue", []))), inline=True)
-        await ctx.send(embed=embed)
+        await self._safe_ctx_send(ctx, embed=embed)
 
     @adbreak.command(name="preview")
     @commands.guild_only()
@@ -652,7 +674,7 @@ class RedAudioRadio(commands.Cog):
                 title = self._format_link_title(track["title"], track["uri"])
                 standalone_lines.append(f"`{index}.` [{track.get('slot', 'Jingle')}] {title} - {track['author']}")
             embed.add_field(name="Between-Song Jingle", value="\n".join(standalone_lines), inline=False)
-        await ctx.send(embed=embed)
+        await self._safe_ctx_send(ctx, embed=embed)
 
     @adbreak.command(name="toggle")
     @commands.guild_only()
@@ -661,7 +683,7 @@ class RedAudioRadio(commands.Cog):
         """Toggle automatic break insertion."""
         current = await self.config.guild(ctx.guild).enabled()
         await self.config.guild(ctx.guild).enabled.set(not current)
-        await ctx.send(f"Breaks are now {'enabled' if not current else 'disabled'}.")
+        await self._safe_ctx_send(ctx, f"Breaks are now {'enabled' if not current else 'disabled'}.")
 
     @adbreak.command(name="interval")
     @commands.guild_only()
@@ -671,7 +693,7 @@ class RedAudioRadio(commands.Cog):
         if maximum is None:
             maximum = minimum
         if minimum < 0 or maximum < 0:
-            return await ctx.send("Interval values must be 0 or greater.")
+            return await self._safe_ctx_send(ctx, "Interval values must be 0 or greater.")
         if minimum > maximum:
             minimum, maximum = maximum, minimum
 
@@ -679,7 +701,10 @@ class RedAudioRadio(commands.Cog):
         await self.config.guild(ctx.guild).min_songs_until_break.set(minimum)
         await self.config.guild(ctx.guild).max_songs_until_break.set(maximum)
         await self.config.guild(ctx.guild).break_counter.set(next_break)
-        await ctx.send(f"Break interval set to {minimum}-{maximum} song(s). Next break in {next_break} song(s).")
+        await self._safe_ctx_send(
+            ctx,
+            f"Break interval set to {minimum}-{maximum} song(s). Next break in {next_break} song(s).",
+        )
 
     @adbreak.command(name="jinglechance")
     @commands.guild_only()
@@ -687,9 +712,9 @@ class RedAudioRadio(commands.Cog):
     async def adbreak_jinglechance(self, ctx: commands.Context, chance: int):
         """Set the percent chance a random jingle plays between normal songs."""
         if chance < 0 or chance > 100:
-            return await ctx.send("Chance must be between 0 and 100.")
+            return await self._safe_ctx_send(ctx, "Chance must be between 0 and 100.")
         await self.config.guild(ctx.guild).jingle_chance.set(chance)
-        await ctx.send(f"Between-song jingle chance set to {chance}%.")
+        await self._safe_ctx_send(ctx, f"Between-song jingle chance set to {chance}%.")
 
     @adbreak.command(name="breakjingles")
     @commands.guild_only()
@@ -700,7 +725,7 @@ class RedAudioRadio(commands.Cog):
         if enabled is None:
             enabled = not current
         await self.config.guild(ctx.guild).break_jingles_enabled.set(enabled)
-        await ctx.send(f"Break start/end jingles are now {'enabled' if enabled else 'disabled'}.")
+        await self._safe_ctx_send(ctx, f"Break start/end jingles are now {'enabled' if enabled else 'disabled'}.")
 
     @adbreak.command(name="volume")
     @commands.guild_only()
@@ -708,9 +733,9 @@ class RedAudioRadio(commands.Cog):
     async def adbreak_volume(self, ctx: commands.Context, volume: int):
         """Set the playback volume used during ad breaks."""
         if volume < 1 or volume > 150:
-            return await ctx.send("Adbreak volume must be between 1 and 150.")
+            return await self._safe_ctx_send(ctx, "Adbreak volume must be between 1 and 150.")
         await self.config.guild(ctx.guild).adbreak_volume.set(volume)
-        await ctx.send(f"Adbreak volume set to {volume}.")
+        await self._safe_ctx_send(ctx, f"Adbreak volume set to {volume}.")
 
     @adbreak.command(name="add")
     @commands.guild_only()
@@ -722,7 +747,7 @@ class RedAudioRadio(commands.Cog):
         track = await self._resolve_track(ctx.guild, normalized_source)
         ad_entries.append(self._build_pool_entry(normalized_source, track))
         await self.config.guild(ctx.guild).ad_urls.set(ad_entries)
-        await ctx.send(f"Stored ad #{len(ad_entries)}: {self._entry_title(ad_entries[-1])}")
+        await self._safe_ctx_send(ctx, f"Stored ad #{len(ad_entries)}: {self._entry_title(ad_entries[-1])}")
 
     @adbreak.command(name="addjingle")
     @commands.guild_only()
@@ -734,7 +759,7 @@ class RedAudioRadio(commands.Cog):
         track = await self._resolve_track(ctx.guild, normalized_source)
         jingle_entries.append(self._build_pool_entry(normalized_source, track))
         await self.config.guild(ctx.guild).jingle_urls.set(jingle_entries)
-        await ctx.send(f"Stored jingle #{len(jingle_entries)}: {self._entry_title(jingle_entries[-1])}")
+        await self._safe_ctx_send(ctx, f"Stored jingle #{len(jingle_entries)}: {self._entry_title(jingle_entries[-1])}")
 
     @adbreak.command(name="refreshmeta")
     @commands.guild_only()
@@ -769,7 +794,7 @@ class RedAudioRadio(commands.Cog):
             ),
             inline=True,
         )
-        await ctx.send(embed=embed)
+        await self._safe_ctx_send(ctx, embed=embed)
 
     @adbreak.command(name="remove")
     @commands.guild_only()
@@ -778,10 +803,10 @@ class RedAudioRadio(commands.Cog):
         """Remove an ad by its list number."""
         ad_urls = await self.config.guild(ctx.guild).ad_urls()
         if index < 1 or index > len(ad_urls):
-            return await ctx.send("That ad number does not exist.")
+            return await self._safe_ctx_send(ctx, "That ad number does not exist.")
         removed = ad_urls.pop(index - 1)
         await self.config.guild(ctx.guild).ad_urls.set(ad_urls)
-        await ctx.send(f"Removed ad #{index}: {self._entry_title(removed)}")
+        await self._safe_ctx_send(ctx, f"Removed ad #{index}: {self._entry_title(removed)}")
 
     @adbreak.command(name="removejingle")
     @commands.guild_only()
@@ -790,10 +815,10 @@ class RedAudioRadio(commands.Cog):
         """Remove a jingle by its list number."""
         jingle_urls = await self.config.guild(ctx.guild).jingle_urls()
         if index < 1 or index > len(jingle_urls):
-            return await ctx.send("That jingle number does not exist.")
+            return await self._safe_ctx_send(ctx, "That jingle number does not exist.")
         removed = jingle_urls.pop(index - 1)
         await self.config.guild(ctx.guild).jingle_urls.set(jingle_urls)
-        await ctx.send(f"Removed jingle #{index}: {self._entry_title(removed)}")
+        await self._safe_ctx_send(ctx, f"Removed jingle #{index}: {self._entry_title(removed)}")
 
     @adbreak.group(name="list", invoke_without_command=True)
     @commands.guild_only()
@@ -805,7 +830,7 @@ class RedAudioRadio(commands.Cog):
         total_pages = self._pool_page_count(ad_entries, "Ads")
         current_page = max(1, min(page, total_pages))
         view = AdbreakListView(self, ctx, "ad_urls", "Ads", current_page, total_pages)
-        message = await ctx.send(embed=embed, view=view)
+        message = await self._safe_ctx_send(ctx, embed=embed, view=view)
         view.message = message
 
     @adbreak_list.command(name="jingles")
@@ -818,7 +843,7 @@ class RedAudioRadio(commands.Cog):
         total_pages = self._pool_page_count(jingle_entries, "Jingles")
         current_page = max(1, min(page, total_pages))
         view = AdbreakListView(self, ctx, "jingle_urls", "Jingles", current_page, total_pages)
-        message = await ctx.send(embed=embed, view=view)
+        message = await self._safe_ctx_send(ctx, embed=embed, view=view)
         view.message = message
 
     @adbreak.command(name="resetcounter")
@@ -831,7 +856,7 @@ class RedAudioRadio(commands.Cog):
             settings["min_songs_until_break"], settings["max_songs_until_break"]
         )
         await self.config.guild(ctx.guild).break_counter.set(next_break)
-        await ctx.send(f"Break counter reset. Next break in {next_break} song(s).")
+        await self._safe_ctx_send(ctx, f"Break counter reset. Next break in {next_break} song(s).")
 
     @commands.Cog.listener()
     async def on_red_audio_track_end(
@@ -915,4 +940,4 @@ class RedAudioRadio(commands.Cog):
     @commands.command()
     async def mycom(self, ctx):
         """Send a test response."""
-        await ctx.send("I can do stuff!")
+        await self._safe_ctx_send(ctx, "I can do stuff!")
