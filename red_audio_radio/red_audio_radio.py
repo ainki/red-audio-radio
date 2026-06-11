@@ -100,6 +100,8 @@ class RedAudioRadio(commands.Cog):
             jingle_cursor=0,
             min_songs_until_break=0,
             max_songs_until_break=0,
+            min_ads_per_break=1,
+            max_ads_per_break=3,
             break_counter=0,
             jingle_chance=25,
             break_jingles_enabled=True,
@@ -291,6 +293,17 @@ class RedAudioRadio(commands.Cog):
             minimum, maximum = maximum, minimum
         return random.randint(minimum, maximum)
 
+    def _pick_target_ads(self, settings: dict) -> int:
+        minimum = settings.get("min_ads_per_break", 1)
+        maximum = settings.get("max_ads_per_break", 3)
+        if minimum > maximum:
+            minimum, maximum = maximum, minimum
+        if minimum < 0:
+            minimum = 0
+        if maximum < 0:
+            maximum = 0
+        return random.randint(minimum, maximum)
+
     def _cursor_key_for_pool(self, key: str) -> str:
         return "ad_cursor" if key == "ad_urls" else "jingle_cursor"
 
@@ -390,7 +403,7 @@ class RedAudioRadio(commands.Cog):
 
     async def _preview_break(self, guild: discord.Guild) -> dict:
         settings = await self.config.guild(guild).all()
-        ad_count = min(len(settings["ad_urls"]), random.randint(1, 3))
+        ad_count = min(len(settings["ad_urls"]), self._pick_target_ads(settings))
         seen_posters = set()
         tracks = []
         break_jingles_enabled = (
@@ -567,16 +580,23 @@ class RedAudioRadio(commands.Cog):
             title="Adbreak Overview",
             description=(
                 "Ad breaks are **{status}**. Interval: **{minimum}-{maximum}** song(s). "
-                "Each break inserts **1-3** ads and can wrap them with jingles."
+                "Each break targets **{ad_min}-{ad_max}** ad(s) and can wrap them with jingles."
             ).format(
                 status=status,
                 minimum=settings["min_songs_until_break"],
                 maximum=settings["max_songs_until_break"],
+                ad_min=settings["min_ads_per_break"],
+                ad_max=settings["max_ads_per_break"],
             ),
         )
         embed.add_field(name="Ads", value=str(len(ad_urls)), inline=True)
         embed.add_field(name="Jingles", value=str(len(jingle_urls)), inline=True)
         embed.add_field(name="Next Break", value=f"{settings['break_counter']} song(s)", inline=True)
+        embed.add_field(
+            name="Ads per Break",
+            value=f"{settings['min_ads_per_break']}-{settings['max_ads_per_break']}",
+            inline=True,
+        )
         embed.add_field(name="Jingle Between Songs", value=f"{settings['jingle_chance']}%", inline=True)
         embed.add_field(
             name="Break Start/End Jingles",
@@ -608,6 +628,11 @@ class RedAudioRadio(commands.Cog):
             inline=True,
         )
         embed.add_field(name="Next Break", value=f"{settings['break_counter']} song(s)", inline=True)
+        embed.add_field(
+            name="Ads per Break",
+            value=f"{settings['min_ads_per_break']}-{settings['max_ads_per_break']}",
+            inline=True,
+        )
         embed.add_field(name="Ads Stored", value=str(len(settings["ad_urls"])), inline=True)
         embed.add_field(name="Jingles Stored", value=str(len(settings["jingle_urls"])), inline=True)
         embed.add_field(name="Jingle Between Songs", value=f"{settings['jingle_chance']}%", inline=True)
@@ -705,6 +730,22 @@ class RedAudioRadio(commands.Cog):
             ctx,
             f"Break interval set to {minimum}-{maximum} song(s). Next break in {next_break} song(s).",
         )
+
+    @adbreak.command(name="adcount")
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_guild=True)
+    async def adbreak_adcount(self, ctx: commands.Context, minimum: int, maximum: Optional[int] = None):
+        """Set how many ads each break targets. Use one value for a fixed count."""
+        if maximum is None:
+            maximum = minimum
+        if minimum < 0 or maximum < 0:
+            return await self._safe_ctx_send(ctx, "Ad count values must be 0 or greater.")
+        if minimum > maximum:
+            minimum, maximum = maximum, minimum
+
+        await self.config.guild(ctx.guild).min_ads_per_break.set(minimum)
+        await self.config.guild(ctx.guild).max_ads_per_break.set(maximum)
+        await self._safe_ctx_send(ctx, f"Break ad count set to {minimum}-{maximum} ad(s).")
 
     @adbreak.command(name="jinglechance")
     @commands.guild_only()
@@ -910,7 +951,7 @@ class RedAudioRadio(commands.Cog):
             await self._enqueue_injected_tracks(guild, player, standalone_tracks)
             return
 
-        ad_count = min(len(settings["ad_urls"]), random.randint(1, 3))
+        ad_count = min(len(settings["ad_urls"]), self._pick_target_ads(settings))
         if ad_count <= 0:
             return
 
