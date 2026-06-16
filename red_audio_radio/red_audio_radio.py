@@ -206,29 +206,21 @@ class RedAudioRadio(commands.Cog):
             return f"`{index}.` {title} - {author}"
         return f"`{index}.` {title}"
 
-    def _paginate_pool_entries(self, entries: list, label: str, max_chars: int = 900) -> list[str]:
+    def _paginate_pool_entries(self, entries: list, label: str, items_per_page: int = 10) -> list[str]:
         if not entries:
             return [f"No {label.lower()} configured."]
 
+        if items_per_page <= 0:
+            items_per_page = 10
+
         pages = []
-        current_lines = []
-        current_length = 0
-
-        for index, entry in enumerate(entries, start=1):
-            line = self._format_pool_line(index, entry)
-            line_length = len(line) + (1 if current_lines else 0)
-
-            if current_lines and current_length + line_length > max_chars:
-                pages.append("\n".join(current_lines))
-                current_lines = [line]
-                current_length = len(line)
-                continue
-
-            current_lines.append(line)
-            current_length += line_length
-
-        if current_lines:
-            pages.append("\n".join(current_lines))
+        for start in range(0, len(entries), items_per_page):
+            chunk = entries[start : start + items_per_page]
+            lines = [
+                self._format_pool_line(index, entry)
+                for index, entry in enumerate(chunk, start=start + 1)
+            ]
+            pages.append("\n".join(lines))
 
         return pages
 
