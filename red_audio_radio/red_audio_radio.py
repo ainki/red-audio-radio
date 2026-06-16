@@ -214,7 +214,8 @@ class RedAudioRadio(commands.Cog):
         min_title_limit = 12
         author_limit = 28
         title_limit = max(min_title_limit, max_chars - 12 - author_limit)
-        title = self._truncate_title(self._entry_title(entry), title_limit)
+        url = self._entry_url(entry)
+        title = self._format_link_title(self._entry_title(entry), url, title_limit)
         author = self._truncate_text(self._entry_author(entry), author_limit)
         if author != "Unknown":
             line = f"`{index}.` {title} - {author}"
@@ -225,7 +226,11 @@ class RedAudioRadio(commands.Cog):
             return line
 
         excess = len(line) - max_chars
-        tightened_title = self._truncate_title(title, max(min_title_limit, len(title) - excess))
+        tightened_title = self._format_link_title(
+            self._entry_title(entry),
+            url,
+            max(min_title_limit, title_limit - excess),
+        )
         if author != "Unknown":
             line = f"`{index}.` {tightened_title} - {author}"
         else:
