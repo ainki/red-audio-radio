@@ -169,6 +169,16 @@ class RedAudioRadio(commands.Cog):
             return title
         return f"{title[: limit - 3].rstrip()}..."
 
+    def _truncate_text(self, text: str, limit: int) -> str:
+        text = (text or "").strip()
+        if limit <= 0:
+            return ""
+        if len(text) <= limit:
+            return text
+        if limit <= 3:
+            return "." * limit
+        return f"{text[: limit - 3].rstrip()}..."
+
     def _format_link_title(self, title: str, url: str, limit: int = 60) -> str:
         safe_title = self._truncate_title(title, limit).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
         if url.startswith(("http://", "https://")):
@@ -199,14 +209,39 @@ class RedAudioRadio(commands.Cog):
 
         return source
 
-    def _format_pool_line(self, index: int, entry) -> str:
-        title = self._format_link_title(self._entry_title(entry), self._entry_url(entry))
-        author = self._entry_author(entry)
+    def _format_pool_line(self, index: int, entry, max_chars: int = 120) -> str:
+        # Keep list lines compact so pages consistently fit Discord character limits.
+        min_title_limit = 12
+        author_limit = 28
+        title_limit = max(min_title_limit, max_chars - 12 - author_limit)
+        title = self._truncate_title(self._entry_title(entry), title_limit)
+        author = self._truncate_text(self._entry_author(entry), author_limit)
         if author != "Unknown":
-            return f"`{index}.` {title} - {author}"
-        return f"`{index}.` {title}"
+            line = f"`{index}.` {title} - {author}"
+        else:
+            line = f"`{index}.` {title}"
 
-    def _paginate_pool_entries(self, entries: list, label: str, items_per_page: int = 10) -> list[str]:
+        if len(line) <= max_chars:
+            return line
+
+        excess = len(line) - max_chars
+        tightened_title = self._truncate_title(title, max(min_title_limit, len(title) - excess))
+        if author != "Unknown":
+            line = f"`{index}.` {tightened_title} - {author}"
+        else:
+            line = f"`{index}.` {tightened_title}"
+
+        if len(line) <= max_chars:
+            return line
+        return self._truncate_text(line, max_chars)
+
+    def _paginate_pool_entries(
+        self,
+        entries: list,
+        label: str,
+        items_per_page: int = 10,
+        max_page_chars: int = 1100,
+    ) -> list[str]:
         if not entries:
             return [f"No {label.lower()} configured."]
 
@@ -216,11 +251,23 @@ class RedAudioRadio(commands.Cog):
         pages = []
         for start in range(0, len(entries), items_per_page):
             chunk = entries[start : start + items_per_page]
-            lines = [
-                self._format_pool_line(index, entry)
-                for index, entry in enumerate(chunk, start=start + 1)
-            ]
-            pages.append("\n".join(lines))
+            if max_page_chars <= 0:
+                max_page_chars = 1200
+
+            per_entry_limit = max(60, (max_page_chars - max(len(chunk) - 1, 0)) // len(chunk))
+
+            while True:
+                lines = [
+                    self._format_pool_line(index, entry, per_entry_limit)
+                    for index, entry in enumerate(chunk, start=start + 1)
+                ]
+                page_text = "\n".join(lines)
+
+                if len(page_text) <= max_page_chars or per_entry_limit <= 40:
+                    pages.append(page_text)
+                    break
+
+                per_entry_limit -= 5
 
         return pages
 
@@ -273,8 +320,7 @@ class RedAudioRadio(commands.Cog):
         entries = await self.config.guild(ctx.guild).get_attr(key)()
         page_text, total_pages = self._format_pool_page(entries, label, page)
         current_page = max(1, min(page, total_pages))
-        embed = await self._base_embed(ctx, title=f"Adbreak {label}")
-        embed.add_field(name=f"{label} ({len(entries)})", value=page_text, inline=False)
+        embed = await self._base_embed(ctx, title=f"Adbreak {label} ({len(entries)})", description=page_text)
         embed.set_footer(text=f"{ctx.guild.name} | Page {current_page}/{total_pages}")
         return embed
 
